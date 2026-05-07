@@ -425,8 +425,6 @@ function renderSentences(paragraph) {
 
 function renderAllPanels() {
   renderTextPanel();
-  renderOverviewPanel();
-  renderParagraphPanel();
   renderSentencePanel();
   renderVocabPanel();
   renderReadingPanel();
@@ -472,95 +470,6 @@ function renderTextCheckResult(check) {
       ? asArray(check.normalization_notes).map((item) => `<div class="diff-line">P${item.index} · ${escapeHtml(item.reason)}<br>Before: ${escapeHtml(item.before)}<br>After: ${escapeHtml(item.after)}</div>`).join("")
       : `<p class="muted">没有发现明显格式修复。</p>`}
   `;
-}
-
-function renderOverviewPanel() {
-  const overview = state.currentArticle.overview;
-  $("overviewTab").innerHTML = overview
-    ? renderOverview(overview)
-    : `<div class="analysis-card"><h3>文章总览</h3><p>由 DeepSeek 生成主旨、核心观点、结构、背景知识和阅读难点。</p><button class="primary-btn" id="runOverviewBtn">生成 AI 文章总览</button></div>`;
-}
-
-function renderBilingualList(items) {
-  const list = asArray(items);
-  if (!list.length) return `<p class="muted">暂无。</p>`;
-  if (typeof list[0] === "string") return renderList(list);
-  return list
-    .map(
-      (item) => `<div class="bilingual-item">
-        <p class="zh-text">${escapeHtml(item.zh || "")}</p>
-        ${item.en ? `<p class="en-quote">&ldquo;${escapeHtml(item.en)}&rdquo;</p>` : ""}
-      </div>`
-    )
-    .join("");
-}
-
-function renderVocabPills(items) {
-  const list = asArray(items);
-  if (!list.length) return `<p class="muted">暂无。</p>`;
-  if (typeof list[0] === "string") {
-    return renderPills(list);
-  }
-  return `<div class="tag-row">${list
-    .map((x) => `<span class="pill">${escapeHtml(x.term || x)} <span class="pill-sep">·</span> ${escapeHtml(x.translation || "")}</span>`)
-    .join("")}</div>`;
-}
-
-function renderOverview(overview) {
-  const mainIdea = overview.main_idea_zh || overview.main_idea || "";
-  const mainEn = overview.main_idea_en || "";
-  const background = overview.background_zh || overview.background || "";
-  const difficulties = overview.reading_difficulties_zh || overview.reading_difficulties || [];
-  return `
-    <div class="two-col">
-      <div class="analysis-card">
-        <h3>文章主旨</h3>
-        <p class="zh-text">${escapeHtml(mainIdea)}</p>
-        ${mainEn ? `<p class="en-quote">&ldquo;${escapeHtml(mainEn)}&rdquo;</p>` : ""}
-        <h4>核心观点</h4>
-        ${renderBilingualList(overview.core_viewpoints)}
-      </div>
-      <div class="analysis-card">
-        <h3>文章结构</h3>
-        ${renderList(overview.structure)}
-        <h4>背景知识</h4>
-        <p>${escapeHtml(background)}</p>
-      </div>
-    </div>
-    <div class="two-col">
-      <div class="analysis-card">
-        <h3>关键词汇</h3>
-        ${renderVocabPills(overview.key_vocabulary)}
-      </div>
-      <div class="analysis-card">
-        <h3>阅读难点提醒</h3>
-        ${renderList(difficulties)}
-      </div>
-    </div>
-  `;
-}
-
-function renderParagraphPanel() {
-  const rawItems = state.currentArticle.paragraph_analysis;
-  if (!rawItems) {
-    $("paragraphTab").innerHTML = `<div class="analysis-card"><h3>段落分析</h3><p>分析每段主旨、段落功能、内部逻辑、重要表达和可模仿写作结构。</p><button class="primary-btn" id="runParagraphBtn">生成 AI 段落分析</button></div>`;
-    return;
-  }
-  const items = asArray(rawItems);
-  $("paragraphTab").innerHTML = items
-    .map(
-      (item) => `
-        <div class="analysis-card">
-          <h3>P${item.index} · ${escapeHtml(item.function)}</h3>
-          <p><strong>段落主旨：</strong>${escapeHtml(item.main_idea)}</p>
-          <p><strong>逻辑关系：</strong>${escapeHtml(item.logic)}</p>
-          <p><strong>可模仿结构：</strong>${escapeHtml(item.writing_template)}</p>
-          <p><strong>中文辅助理解：</strong>${escapeHtml(item.chinese_help)}</p>
-          ${renderPills(item.expressions)}
-        </div>
-      `
-    )
-    .join("");
 }
 
 function renderSentencePanel() {
@@ -1091,11 +1000,6 @@ document.addEventListener("click", async (event) => {
     $("appShell").classList.toggle("teacher-collapsed");
     target.textContent = $("appShell").classList.contains("teacher-collapsed") ? "显示AI面板" : "隐藏AI面板";
   }
-  if (target.id === "focusModeBtn") {
-    $("appShell").classList.toggle("focus-mode");
-    target.textContent = $("appShell").classList.contains("focus-mode") ? "退出专注" : "专注模式";
-    $("toggleSidebarBtn").textContent = $("appShell").classList.contains("focus-mode") ? "退出专注" : "隐藏侧栏";
-  }
   if (target.id === "closeInfoBtn") {
     $("articleInfoDialog").close();
   }
@@ -1178,23 +1082,6 @@ document.addEventListener("click", async (event) => {
     state.useCleanedText = !state.useCleanedText;
     renderArticleText();
     renderTextPanel();
-  }
-  if (target.id === "runOverviewBtn") {
-    await runAction(target, "生成中...", async () => {
-      const data = await api(`/api/articles/${state.currentArticle.id}/overview`, { method: "POST" });
-      if (data.article) state.currentArticle = data.article;
-      state.currentArticle.overview = data.overview;
-      renderOverviewPanel();
-      setTeacherContent(`<div class="analysis-card"><h3>文章总览</h3>${teacherMeta(data.meta)}${renderOverview(data.overview)}</div>`);
-    });
-  }
-  if (target.id === "runParagraphBtn") {
-    await runAction(target, "分析中...", async () => {
-      const data = await api(`/api/articles/${state.currentArticle.id}/paragraphs/analyze`, { method: "POST" });
-      if (data.article) state.currentArticle = data.article;
-      state.currentArticle.paragraph_analysis = data.paragraphs;
-      renderParagraphPanel();
-    });
   }
   if (target.id === "runLongSentenceBtn") {
     await runAction(target, "解析中...", async () => {
@@ -1342,12 +1229,11 @@ async function runBatchAnalyze() {
   if (!state.currentArticle) return;
   const id = state.currentArticle.id;
   const steps = [
-    { label: "文本检查", run: () => api(`/api/articles/${id}/text-check`, { method: "POST" }), done: (d) => { state.currentArticle = d.article; renderArticleText(); renderTextPanel(); } },
-    { label: "文章总览", run: () => api(`/api/articles/${id}/overview`, { method: "POST" }), done: (d) => { if (d.article) state.currentArticle = d.article; state.currentArticle.overview = d.overview; renderOverviewPanel(); } },
-    { label: "段落分析", run: () => api(`/api/articles/${id}/paragraphs/analyze`, { method: "POST" }), done: (d) => { if (d.article) state.currentArticle = d.article; state.currentArticle.paragraph_analysis = d.paragraphs; renderParagraphPanel(); } },
+    { label: "文本检查", run: () => api(`/api/articles/${id}/text-check`, { method: "POST" }), done: (d) => { if (d.article) state.currentArticle = d.article; renderArticleText(); renderTextPanel(); } },
     { label: "长难句", run: () => api(`/api/articles/${id}/long-sentences`, { method: "POST" }), done: (d) => { if (d.article) state.currentArticle = d.article; state.longSentences = d.sentences; state.currentArticle.long_sentence_analysis = d.sentences; renderSentencePanel(); } },
     { label: "词汇分析", run: () => api(`/api/articles/${id}/vocabulary/analyze`, { method: "POST" }), done: (d) => { if (d.article) state.currentArticle = d.article; state.currentArticle.vocabulary_analysis = d.items; renderVocabPanel(); } },
     { label: "阅读理解题", run: () => api(`/api/articles/${id}/reading/questions`, { method: "POST" }), done: (d) => { if (d.article) state.currentArticle = d.article; state.readingQuestions = normalizeReadingQuestions(d.questions); state.currentArticle.reading_questions = d.questions; renderReadingPanel(); } },
+    { label: "听写材料", run: () => api(`/api/articles/${id}/dictation/items`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ count: 6 }) }), done: (d) => { if (d.article) state.currentArticle = d.article; state.dictationItems = normalizeDictationItems(d.items); state.currentArticle.dictation_items = d.items; renderDictationPanel(); } },
   ];
   const orig = btn.textContent;
   btn.disabled = true;

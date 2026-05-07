@@ -59,23 +59,11 @@ button {
   padding: 8px 4px;
 }
 
-.app-shell.teacher-collapsed .study-grid,
-.app-shell.focus-mode .study-grid {
+.app-shell.teacher-collapsed .study-grid {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.app-shell.teacher-collapsed .teacher-panel,
-.app-shell.focus-mode .teacher-panel {
-  display: none;
-}
-
-.app-shell.focus-mode {
-  grid-template-columns: 48px minmax(0, 1fr);
-}
-
-.app-shell.focus-mode .sidebar > *:not(.layout-actions),
-.app-shell.focus-mode .tabs,
-.app-shell.focus-mode .tab-panel {
+.app-shell.teacher-collapsed .teacher-panel {
   display: none;
 }
 
@@ -417,8 +405,7 @@ select {
   font-size: 18px;
 }
 
-.app-shell.teacher-collapsed .reader,
-.app-shell.focus-mode .reader {
+.app-shell.teacher-collapsed .reader {
   max-height: calc(100vh - 156px);
 }
 
