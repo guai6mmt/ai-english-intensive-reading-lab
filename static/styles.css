@@ -626,3 +626,353 @@ dialog::backdrop {
     grid-template-columns: 1fr;
   }
 }
+
+/* ── 紧凑文章列表 ─────────────────────────────── */
+.source-group {
+  margin-bottom: 4px;
+}
+
+.source-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  background: var(--bg);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  user-select: none;
+}
+
+.source-group-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.article-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px 7px 12px;
+  border-radius: 5px;
+  cursor: pointer;
+  min-width: 0;
+  transition: background 0.12s;
+}
+
+.article-row:hover {
+  background: var(--accent-soft);
+}
+
+.article-row.active {
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+  font-weight: 600;
+}
+
+.article-row-title {
+  flex: 1;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.article-row-empty {
+  padding: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.progress-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+.progress-dot-empty {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+}
+
+.pill-xs {
+  font-size: 10px;
+  padding: 1px 6px;
+  min-height: 18px;
+  flex-shrink: 0;
+}
+
+.pill-sep {
+  color: var(--line);
+}
+
+/* ── 双语总览 ─────────────────────────────────── */
+.bilingual-item {
+  border-left: 3px solid var(--accent-soft);
+  padding-left: 10px;
+  margin-bottom: 14px;
+}
+
+.zh-text {
+  margin: 0 0 5px;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.en-quote {
+  margin: 4px 0 0;
+  font-style: italic;
+  color: var(--accent-dark);
+  background: var(--accent-soft);
+  padding: 5px 10px;
+  border-radius: 5px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* ── 移动端 / 平板全面适配 ────────────────────── */
+
+/* 平板（≤ 900px）：侧栏默认收起，主内容全宽 */
+@media (max-width: 900px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    position: relative;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 300px;
+    height: 100vh;
+    z-index: 200;
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    box-shadow: 4px 0 24px rgba(30,37,41,0.14);
+  }
+
+  .app-shell.sidebar-open .sidebar {
+    transform: translateX(0);
+  }
+
+  .sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(30,37,41,0.32);
+    z-index: 199;
+  }
+
+  .app-shell.sidebar-open .sidebar-backdrop {
+    display: block;
+  }
+
+  /* 移动端菜单按钮 */
+  .mobile-menu-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: white;
+    font-size: 20px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .study-header {
+    flex-wrap: wrap;
+  }
+
+  .two-col {
+    grid-template-columns: 1fr;
+  }
+
+  .study-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .reader {
+    max-height: none;
+    font-size: 16px;
+  }
+
+  .teacher-panel {
+    max-height: none;
+    position: static;
+  }
+
+  /* 标签页横向滚动 */
+  .tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding-bottom: 4px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tab {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* 对话框适配小屏 */
+  dialog {
+    width: calc(100vw - 24px);
+    max-height: calc(100vh - 40px);
+    overflow-y: auto;
+    padding: 14px;
+  }
+
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* 增大触控目标 */
+  .primary-btn,
+  .secondary-btn,
+  .ghost-btn,
+  .nav-btn,
+  .tab {
+    min-height: 44px;
+  }
+
+  .article-row {
+    min-height: 40px;
+  }
+
+  /* 隐藏桌面专用布局控件 */
+  .app-shell.sidebar-collapsed {
+    grid-template-columns: 1fr;
+  }
+
+  .app-shell.sidebar-collapsed .sidebar {
+    transform: translateX(-100%);
+  }
+}
+
+/* 手机（≤ 480px）：更紧凑 */
+@media (max-width: 480px) {
+  .brand h1 {
+    font-size: 16px;
+  }
+
+  .study-header h2 {
+    font-size: 20px;
+  }
+
+  .reader {
+    padding: 12px 14px;
+    font-size: 15px;
+  }
+
+  .tab-panel {
+    padding: 10px;
+  }
+
+  .analysis-card,
+  .exercise-card {
+    padding: 10px;
+  }
+
+  .score-badge {
+    min-width: 44px;
+    height: 44px;
+    font-size: 14px;
+  }
+}
+
+/* 桌面上隐藏移动端菜单按钮 */
+@media (min-width: 901px) {
+  .mobile-menu-btn {
+    display: none;
+  }
+
+  .sidebar-backdrop {
+    display: none !important;
+  }
+}
+
+/* ── 删除来源按钮 ──────────────────────────────── */
+.del-source-btn {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.source-group-header:hover .del-source-btn {
+  opacity: 1;
+}
+
+.del-source-btn:hover {
+  color: #c0392b;
+}
+
+/* ── 学习笔记 ──────────────────────────────────── */
+.notes-section {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.notes-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.notes-status {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--accent);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.notes-section textarea {
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.notes-section textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}

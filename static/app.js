@@ -31,11 +31,21 @@ function formatNumber(value) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, options);
+  let response;
+  try {
+    response = await fetch(path, options);
+  } catch {
+    throw new Error("网络连接失败，请检查服务是否运行。");
+  }
   const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`服务器返回无效响应 (${response.status})，请查看后端日志。`);
+  }
   if (!response.ok) {
-    throw new Error(data.detail || "请求失败");
+    throw new Error(data.detail || `请求失败 (${response.status})`);
   }
   return data;
 }
@@ -161,22 +171,8 @@ function fillSelect(select, firstLabel, values) {
 }
 
 function renderSources() {
-  const sources = state.library.sources || [];
-  $("sourceList").innerHTML = sources.length
-    ? sources
-        .map(
-          (source) => `
-            <div class="source-item">
-              <strong>${escapeHtml(source.filename)}</strong>
-              <div class="meta-row">
-                <span class="pill">${source.article_count} 篇</span>
-                <span class="pill">${escapeHtml(source.uploaded_at)}</span>
-              </div>
-            </div>
-          `
-        )
-        .join("")
-    : `<div class="source-item muted">还没有导入文件。</div>`;
+  // 来源信息已整合进文章列表分组，此处清空避免重复
+  $("sourceList").innerHTML = "";
 }
 
 function filteredArticles() {
@@ -225,26 +221,45 @@ function filteredArticles() {
 function renderArticles() {
   const articles = filteredArticles();
   if (!articles.length) {
-    $("articleList").innerHTML = `<div class="article-item muted">没有匹配文章。</div>`;
+    $("articleList").innerHTML = `<div class="article-row-empty">没有匹配文章。</div>`;
     return;
   }
-  $("articleList").innerHTML = articles
-    .map((article) => {
-      const tags = [
-        article.stats.cefr,
-        ...(article.ai_tags?.topics || []).slice(0, 2),
-        ...(article.ai_tags?.language || []).slice(0, 2),
-      ];
-      return `
-        <div class="article-item">
-          <h3>${escapeHtml(article.title)}</h3>
-          <p class="muted">${escapeHtml(article.subtitle || article.section || "")}</p>
-          <div class="tag-row">${tags.map((tag) => `<span class="pill">${escapeHtml(tag)}</span>`).join("")}</div>
-          <div class="inline-actions">
-            <button class="secondary-btn" data-open-article="${article.id}">开始学习</button>
-          </div>
+
+  // 按来源文件分组
+  const groups = new Map();
+  articles.forEach((article) => {
+    const key = article.source_id || article.sourceFilename || "unknown";
+    if (!groups.has(key)) {
+      groups.set(key, { sourceId: article.source_id || "", filename: article.sourceFilename, articles: [] });
+    }
+    groups.get(key).articles.push(article);
+  });
+
+  $("articleList").innerHTML = [...groups.values()]
+    .map((group) => {
+      const label = (group.filename || "未知来源").replace(/\.[^.]+$/, "");
+      const rows = group.articles
+        .map((article) => {
+          const studied = state.progress[article.id];
+          const dot = studied
+            ? `<span class="progress-dot" title="已学习"></span>`
+            : `<span class="progress-dot-empty"></span>`;
+          const active = state.currentArticle?.id === article.id ? " active" : "";
+          return `<div class="article-row${active}" data-open-article="${article.id}">
+            ${dot}
+            <span class="article-row-title">${escapeHtml(article.title)}</span>
+            <span class="pill pill-xs">${escapeHtml(article.stats?.cefr || "?")}</span>
+          </div>`;
+        })
+        .join("");
+      return `<div class="source-group">
+        <div class="source-group-header">
+          <span class="source-group-name">${escapeHtml(label)}</span>
+          <span class="pill pill-xs">${group.articles.length}篇</span>
+          ${group.sourceId ? `<button class="del-source-btn" data-delete-source="${escapeHtml(group.sourceId)}" title="删除此来源">✕</button>` : ""}
         </div>
-      `;
+        ${rows}
+      </div>`;
     })
     .join("");
 }
@@ -256,16 +271,23 @@ async function openArticle(articleId) {
   state.activeSentence = "";
   state.longSentences = state.currentArticle.long_sentence_analysis || [];
   state.readingQuestions = state.currentArticle.reading_questions || [];
-  state.dictationItems = (state.longSentences || []).slice(0, 6).map((item) => ({
-    id: item.sentence,
-    source: item.sentence,
+  // 若已有缓存的听写材料则直接载入，否则留空等待用户生成
+  state.dictationItems = state.longSentences.slice(0, 6).map((item) => ({
+    id: item.sentence || "",
+    source: item.sentence || "",
   }));
-  showView("studyView");
-  $("appShell").classList.add("teacher-collapsed");
+  showView(“studyView”);
+  $(“appShell”).classList.add(“teacher-collapsed”);
   renderStudyHeader();
   renderArticleText();
   renderAllPanels();
-  setTeacherContent(`<p class="muted">已载入文章。建议先完成“文本检查”，再进入文章总览和段落分析。</p>`);
+  setTeacherContent(`<p class=”muted”>已载入文章。建议先完成”文本检查”，再进入文章总览和段落分析。</p>`);
+  const notesEl = $(“articleNotes”);
+  if (notesEl) {
+    notesEl.value = data.article.notes || “”;
+    notesEl.removeEventListener(“input”, scheduleNotesSave);
+    notesEl.addEventListener(“input”, scheduleNotesSave);
+  }
 }
 
 function renderStudyHeader() {
@@ -293,8 +315,24 @@ function renderArticleText() {
     .join("");
 }
 
+function splitSentences(paragraph) {
+  // 保护缩写词中的句号，避免错误断句
+  const abbrs = ["Mr.", "Mrs.", "Ms.", "Dr.", "Prof.", "Sr.", "Jr.", "vs.", "i.e.", "e.g.", "etc.", "St.", "U.S.", "U.K.", "a.m.", "p.m.", "Inc.", "Ltd."];
+  let protected_ = paragraph;
+  abbrs.forEach((abbr) => {
+    protected_ = protected_.split(abbr).join(abbr.replace(/\./g, "\x01"));
+  });
+  // 保护数字中的小数点
+  protected_ = protected_.replace(/(\d+)\.(\d+)/g, "$1\x01$2");
+  const chunks = protected_.split(/(?<=[.!?]["']?)\s+(?=[A-Z"'])/) ;
+  return chunks.map((c) => c.replace(/\x01/g, ".").trim()).filter((c) => c.split(/\s+/).length > 2);
+}
+
 function renderSentences(paragraph) {
-  const chunks = paragraph.match(/[^.!?]+[.!?]+["']?|[^.!?]+$/g) || [paragraph];
+  const chunks = splitSentences(paragraph);
+  if (!chunks.length) {
+    return `<span class="sentence" data-sentence="${escapeHtml(paragraph)}">${escapeHtml(paragraph)} </span>`;
+  }
   return chunks
     .map((sentence) => {
       const clean = sentence.trim();
@@ -363,30 +401,58 @@ function renderOverviewPanel() {
     : `<div class="analysis-card"><h3>文章总览</h3><p>由 DeepSeek 生成主旨、核心观点、结构、背景知识和阅读难点。</p><button class="primary-btn" id="runOverviewBtn">生成 AI 文章总览</button></div>`;
 }
 
+function renderBilingualList(items) {
+  if (!items || !items.length) return `<p class="muted">暂无。</p>`;
+  if (typeof items[0] === "string") return renderList(items);
+  return items
+    .map(
+      (item) => `<div class="bilingual-item">
+        <p class="zh-text">${escapeHtml(item.zh || "")}</p>
+        ${item.en ? `<p class="en-quote">&ldquo;${escapeHtml(item.en)}&rdquo;</p>` : ""}
+      </div>`
+    )
+    .join("");
+}
+
+function renderVocabPills(items) {
+  if (!items || !items.length) return `<p class="muted">暂无。</p>`;
+  if (typeof items[0] === "string") {
+    return `<div class="tag-row">${items.map((x) => `<span class="pill">${escapeHtml(x)}</span>`).join("")}</div>`;
+  }
+  return `<div class="tag-row">${items
+    .map((x) => `<span class="pill">${escapeHtml(x.term || x)} <span class="pill-sep">·</span> ${escapeHtml(x.translation || "")}</span>`)
+    .join("")}</div>`;
+}
+
 function renderOverview(overview) {
+  const mainIdea = overview.main_idea_zh || overview.main_idea || "";
+  const mainEn = overview.main_idea_en || "";
+  const background = overview.background_zh || overview.background || "";
+  const difficulties = overview.reading_difficulties_zh || overview.reading_difficulties || [];
   return `
     <div class="two-col">
       <div class="analysis-card">
         <h3>文章主旨</h3>
-        <p>${escapeHtml(overview.main_idea)}</p>
+        <p class="zh-text">${escapeHtml(mainIdea)}</p>
+        ${mainEn ? `<p class="en-quote">&ldquo;${escapeHtml(mainEn)}&rdquo;</p>` : ""}
         <h4>核心观点</h4>
-        ${renderList(overview.core_viewpoints)}
+        ${renderBilingualList(overview.core_viewpoints)}
       </div>
       <div class="analysis-card">
         <h3>文章结构</h3>
         ${renderList(overview.structure)}
         <h4>背景知识</h4>
-        <p>${escapeHtml(overview.background)}</p>
+        <p>${escapeHtml(background)}</p>
       </div>
     </div>
     <div class="two-col">
       <div class="analysis-card">
         <h3>关键词汇</h3>
-        <div class="tag-row">${(overview.key_vocabulary || []).map((x) => `<span class="pill">${escapeHtml(x)}</span>`).join("")}</div>
+        ${renderVocabPills(overview.key_vocabulary)}
       </div>
       <div class="analysis-card">
         <h3>阅读难点提醒</h3>
-        ${renderList(overview.reading_difficulties)}
+        ${renderList(difficulties)}
       </div>
     </div>
   `;
@@ -580,6 +646,20 @@ function renderVocabulary() {
     .join("");
 }
 
+function parseFeedback(value) {
+  if (typeof value === "object" && value !== null) return value;
+  try { return JSON.parse(value); } catch { return null; }
+}
+
+function renderOutputFeedback(kind, feedback) {
+  const fb = parseFeedback(feedback);
+  if (!fb) return `<pre class="feedback">${escapeHtml(String(feedback))}</pre>`;
+  if (kind === "writing") return renderWritingFeedback(fb, null);
+  if (kind === "reading-answer") return renderReadingFeedback(fb, null);
+  if (kind === "dictation") return renderDictationFeedback(fb, null);
+  return `<div class="analysis-card">${renderObject(fb)}</div>`;
+}
+
 function renderOutputs() {
   if (!state.outputs.length) {
     $("outputsList").innerHTML = `<div class="empty-state"><h3>还没有产出</h3><p>阅读答题、口语转写和写作反馈会保存到这里。</p></div>`;
@@ -593,22 +673,11 @@ function renderOutputs() {
         <div class="output-item">
           <div class="tag-row"><span class="pill">${escapeHtml(item.kind)}</span><span class="pill">${escapeHtml(item.created_at)}</span></div>
           <p>${escapeHtml(item.content)}</p>
-          ${item.feedback ? `<div class="feedback">${escapeHtml(prettyFeedback(item.feedback))}</div>` : ""}
+          ${item.feedback ? renderOutputFeedback(item.kind, item.feedback) : ""}
         </div>
       `
     )
     .join("");
-}
-
-function prettyFeedback(value) {
-  if (typeof value === "object" && value !== null) {
-    return JSON.stringify(value, null, 2);
-  }
-  try {
-    return JSON.stringify(JSON.parse(value), null, 2);
-  } catch {
-    return value;
-  }
 }
 
 function renderObject(obj) {
@@ -911,6 +980,26 @@ document.addEventListener("click", async (event) => {
       alert("文章库已重建。");
     });
   }
+  if (target.matches("[data-delete-source]")) {
+    const sourceId = target.dataset.deleteSource;
+    if (!confirm("确认删除此来源及其全部文章？此操作不可撤销。")) return;
+    await runAction(target, "删除中...", async () => {
+      const data = await api(`/api/sources/${sourceId}`, { method: "DELETE" });
+      state.library = data.library;
+      state.summary = data.summary;
+      if (state.currentArticle && !data.library.sources.some((s) => s.articles?.some((a) => a.id === state.currentArticle.id))) {
+        state.currentArticle = null;
+        showView("libraryView");
+      }
+      renderGlobalStats();
+      renderAiStatus();
+      renderSources();
+      renderArticles();
+    });
+  }
+  if (target.id === "batchAnalyzeBtn") {
+    await runBatchAnalyze();
+  }
   if (target.id === "favoriteBtn") {
     await api(`/api/articles/${state.currentArticle.id}/favorite`, { method: "POST" });
     await reloadCurrentArticle();
@@ -989,7 +1078,13 @@ document.addEventListener("click", async (event) => {
       });
       const box = $(`vocabFeedback-${index}`);
       box.hidden = false;
-      box.textContent = JSON.stringify(data.feedback, null, 2);
+      const fb = data.feedback || {};
+      box.innerHTML = `
+        <div class="teacher-section"><strong>自然度</strong><p>${escapeHtml(fb.naturalness || "")}</p></div>
+        ${fb.issue ? `<div class="teacher-section"><strong>问题</strong><p>${escapeHtml(fb.issue)}</p></div>` : ""}
+        <div class="teacher-section"><strong>改进句</strong><p>${escapeHtml(fb.improved_sentence || "")}</p></div>
+        <div class="teacher-section"><strong>用法提示</strong><p>${escapeHtml(fb.usage_tip || "")}</p></div>
+      `;
     });
   }
   if (target.id === "runReadingQuestionsBtn") {
@@ -1057,6 +1152,81 @@ document.addEventListener("click", async (event) => {
     });
   }
 });
+
+// 一键批量分析
+async function runBatchAnalyze() {
+  const btn = $("batchAnalyzeBtn");
+  if (!state.currentArticle) return;
+  const id = state.currentArticle.id;
+  const steps = [
+    { label: "文本检查", run: () => api(`/api/articles/${id}/text-check`, { method: "POST" }), done: (d) => { state.currentArticle = d.article; renderArticleText(); renderTextPanel(); } },
+    { label: "文章总览", run: () => api(`/api/articles/${id}/overview`, { method: "POST" }), done: (d) => { state.currentArticle.overview = d.overview; renderOverviewPanel(); } },
+    { label: "段落分析", run: () => api(`/api/articles/${id}/paragraphs/analyze`, { method: "POST" }), done: (d) => { state.currentArticle.paragraph_analysis = d.paragraphs; renderParagraphPanel(); } },
+    { label: "长难句", run: () => api(`/api/articles/${id}/long-sentences`, { method: "POST" }), done: (d) => { state.longSentences = d.sentences; state.currentArticle.long_sentence_analysis = d.sentences; renderSentencePanel(); } },
+    { label: "词汇分析", run: () => api(`/api/articles/${id}/vocabulary/analyze`, { method: "POST" }), done: (d) => { state.currentArticle.vocabulary_analysis = d.items; renderVocabPanel(); } },
+    { label: "阅读理解题", run: () => api(`/api/articles/${id}/reading/questions`, { method: "POST" }), done: (d) => { state.readingQuestions = d.questions; state.currentArticle.reading_questions = d.questions; renderReadingPanel(); } },
+  ];
+  const orig = btn.textContent;
+  btn.disabled = true;
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    btn.textContent = `${step.label}… (${i + 1}/${steps.length})`;
+    try {
+      const data = await step.run();
+      step.done(data);
+    } catch (err) {
+      setTeacherContent(`<p class="status-text">批量分析在"${step.label}"步骤出错：${escapeHtml(err.message)}</p>`);
+      break;
+    }
+  }
+  btn.disabled = false;
+  btn.textContent = orig;
+  renderArticles();
+}
+
+// 学习笔记自动保存
+let notesSaveTimer = null;
+function scheduleNotesSave() {
+  clearTimeout(notesSaveTimer);
+  notesSaveTimer = setTimeout(async () => {
+    const textarea = $("articleNotes");
+    if (!textarea || !state.currentArticle) return;
+    const notes = textarea.value;
+    const status = $("notesStatus");
+    try {
+      await api(`/api/articles/${state.currentArticle.id}/notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notes }),
+      });
+      state.currentArticle.notes = notes;
+      if (status) { status.textContent = "已保存"; setTimeout(() => { status.textContent = ""; }, 2000); }
+    } catch {
+      if (status) status.textContent = "保存失败";
+    }
+  }, 1500);
+}
+
+// 移动端侧栏开关
+function openMobileSidebar() {
+  $("appShell").classList.add("sidebar-open");
+}
+function closeMobileSidebar() {
+  $("appShell").classList.remove("sidebar-open");
+}
+
+document.addEventListener("click", (e) => {
+  if (e.target.id === "mobileMenuBtn" || e.target.id === "mobileMenuBtn2") {
+    openMobileSidebar();
+  }
+  if (e.target.id === "sidebarBackdrop") {
+    closeMobileSidebar();
+  }
+  // 移动端点击文章后自动关闭侧栏
+  if (e.target.matches("[data-open-article]") && window.innerWidth <= 900) {
+    closeMobileSidebar();
+  }
+}, true); // 捕获阶段，避免被其他监听器拦截
 
 $("uploadBtn").addEventListener("click", async () => {
   const file = $("fileInput").files[0];

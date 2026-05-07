@@ -12,6 +12,7 @@ import time
 import uuid
 import zipfile
 from collections import Counter
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -40,7 +41,7 @@ PROGRESS_PATH = DATA_DIR / "progress.json"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 
 SUPPORTED_EXTENSIONS = {".epub", ".docx", ".pdf", ".txt"}
-MAX_AI_CHARS = 18000
+MAX_AI_CHARS = 10000
 
 AI_PROVIDERS = {
     "deepseek": {
@@ -99,7 +100,12 @@ MINI_GLOSSARY = {
     "resilience": "韧性",
 }
 
-app = FastAPI(title="AI English Intensive Reading Lab")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    ensure_dirs()
+    yield
+
+app = FastAPI(title="AI English Intensive Reading Lab", lifespan=lifespan)
 
 
 class PackRequest(BaseModel):
@@ -165,6 +171,10 @@ class ModelSettingsRequest(BaseModel):
     qwen_model: str | None = None
 
 
+class NotesRequest(BaseModel):
+    notes: str
+
+
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(exist_ok=True)
     UPLOAD_DIR.mkdir(exist_ok=True)
@@ -190,7 +200,7 @@ def now_iso() -> str:
 
 
 def stable_id(*parts: str) -> str:
-    return hashlib.sha1("::".join(parts).encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256("::".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
 def file_sha256(path: Path) -> str:
@@ -345,7 +355,7 @@ def is_noise_paragraph(paragraph: str) -> tuple[bool, str]:
         return True, "来源链接"
     if text.endswith("·") and len(words(text)) <= 12:
         return True, "相关文章链接"
-    if len(words(text)) <= 12 and not re.search(r"[.!?。！？)]$", text):
+    if len(words(text)) <= 12 and not re.search(r"[.!?。！？]$", text):
         return True, "短链接/标题碎片"
     if len(words(text)) <= 8 and not re.search(r"[.!?]$", text):
         return True, "短链接/标题碎片"
@@ -648,13 +658,13 @@ def parse_upload(path: Path, source_id: str) -> list[dict[str, Any]]:
 
 def library_summary(library: dict[str, Any]) -> dict[str, Any]:
     sources = library.get("sources", [])
-    articles = [enrich_article(a) for s in sources for a in s.get("articles", [])]
+    articles = [a for s in sources for a in s.get("articles", [])]
     return {
         "source_count": len(sources),
         "article_count": len(articles),
-        "word_count": sum(a["stats"]["word_count"] for a in articles),
-        "reading_minutes": sum(a["stats"]["reading_minutes"] for a in articles),
-        "cefr_distribution": dict(Counter(a["stats"]["cefr"] for a in articles)),
+        "word_count": sum(a.get("stats", {}).get("word_count", 0) for a in articles),
+        "reading_minutes": sum(a.get("stats", {}).get("reading_minutes", 0) for a in articles),
+        "cefr_distribution": dict(Counter(a.get("stats", {}).get("cefr", "?") for a in articles)),
     }
 
 
@@ -786,17 +796,18 @@ def text_check_fallback(article: dict[str, Any]) -> dict[str, Any]:
 def overview_fallback(article: dict[str, Any]) -> dict[str, Any]:
     text = article_text(article)
     sentences = split_sentences(text)
-    keywords = [item["term"] for item in article["stats"].get("top_terms", [])[:8]]
+    keywords = [item[“term”] for item in article[“stats”].get(“top_terms”, [])[:8]]
     return {
-        "main_idea": f"本文围绕“{article['title']}”展开，核心内容可从标题、首段和高频关键词入手理解。",
-        "core_viewpoints": [
-            sentences[0] if sentences else "文章提出一个值得分析的现象或问题。",
-            sentences[min(2, len(sentences) - 1)] if len(sentences) > 2 else "后文通过事实、解释或对比推进论证。",
+        “main_idea_zh”: f”本文围绕”{article['title']}”展开，核心内容可从标题、首段和高频关键词入手理解。”,
+        “main_idea_en”: sentences[0] if sentences else “”,
+        “core_viewpoints”: [
+            {“zh”: “文章提出一个值得分析的现象或问题。”, “en”: sentences[0] if sentences else “”},
+            {“zh”: “后文通过事实、解释或对比推进论证。”, “en”: sentences[min(2, len(sentences) - 1)] if len(sentences) > 2 else “”},
         ],
-        "structure": ["引入话题", "解释背景或原因", "展开影响与争议", "形成判断或开放结论"],
-        "key_vocabulary": keywords,
-        "background": "请结合文章栏目和标题补充相关经济、社会或时事背景。",
-        "reading_difficulties": ["注意长句中的插入语、让步关系和因果关系。", "先抓段落主旨，再处理细节。"],
+        “structure”: [“引入话题”, “解释背景或原因”, “展开影响与争议”, “形成判断或开放结论”],
+        “key_vocabulary”: [{“term”: k, “translation”: MINI_GLOSSARY.get(k, “结合原文理解”)} for k in keywords],
+        “background_zh”: “请结合文章栏目和标题补充相关经济、社会或时事背景。”,
+        “reading_difficulties_zh”: [“注意长句中的插入语、让步关系和因果关系。”, “先抓段落主旨，再处理细节。”],
     }
 
 
@@ -1049,11 +1060,6 @@ SYSTEM_TEACHER = (
 )
 
 
-@app.on_event("startup")
-def startup() -> None:
-    ensure_dirs()
-
-
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
@@ -1173,6 +1179,13 @@ async def upload_file(file: UploadFile = File(...)) -> dict[str, Any]:
     return {"source": source, "summary": library_summary(library)}
 
 
+_AI_PRESERVE_FIELDS = [
+    "overview", "paragraph_analysis", "vocabulary_analysis",
+    "long_sentence_analysis", "reading_questions", "text_check",
+    "learning_pack", "favorite", "favorite_at", "last_opened_at", "notes",
+]
+
+
 @app.post("/api/library/rebuild")
 def rebuild_library() -> dict[str, Any]:
     library = load_json(LIBRARY_PATH, {"sources": []})
@@ -1186,7 +1199,14 @@ def rebuild_library() -> dict[str, Any]:
         if content_hash in seen_hashes:
             continue
         seen_hashes.add(content_hash)
+        old_articles_map = {a["id"]: a for a in source.get("articles", [])}
         articles = parse_upload(stored_path, source["id"])
+        for article in articles:
+            old = old_articles_map.get(article["id"])
+            if old:
+                for field in _AI_PRESERVE_FIELDS:
+                    if field in old:
+                        article[field] = old[field]
         rebuilt_sources.append({
             **source,
             "content_hash": content_hash,
@@ -1228,9 +1248,9 @@ def text_check(article_id: str) -> dict[str, Any]:
     article = find_article(article_id)
     fallback = text_check_fallback(article)
     prompt = (
-        "请对下面英文文章做文本检查，返回JSON字段：cleaned_paragraphs(字符串数组), "
-        "issues(数组，每项含paragraph, issue, suggestion), summary。只修正明显格式/OCR/标点/拼写疑点，不改写作者风格。\n\n"
-        + truncate_text(article_text(article, cleaned=False))
+        "请在已完成基础清洗的英文文章上做AI二次检查，返回JSON字段：cleaned_paragraphs(字符串数组), "
+        "issues(数组，每项含paragraph, issue, suggestion), summary。只修正明显OCR错误/标点/拼写疑点，不改写作者风格和句式。\n\n"
+        + truncate_text(article_text(article, cleaned=True))
     )
     result, meta = call_ai_json("deepseek", SYSTEM_TEACHER, prompt, fallback)
     cleaned = normalize_paragraphs(result.get("cleaned_paragraphs") or fallback["cleaned_paragraphs"])
@@ -1244,7 +1264,10 @@ def text_check(article_id: str) -> dict[str, Any]:
         article_data["normalization_notes"] = result["normalization_notes"]
         article_data["text_check"] = result
         article_data["cleaned_stats"] = article_stats(cleaned)
-    updated = update_article(article_id, apply)
+    try:
+        updated = update_article(article_id, apply)
+    except Exception:
+        updated = find_article(article_id)
     return {"text_check": result, "meta": meta, "article": updated}
 
 
@@ -1253,13 +1276,22 @@ def article_overview(article_id: str) -> dict[str, Any]:
     article = find_article(article_id)
     fallback = overview_fallback(article)
     prompt = (
-        "请生成高质量文章总览，JSON字段：main_idea(中文), core_viewpoints(中文数组), "
-        "structure(中文数组), key_vocabulary(数组), background(中文), reading_difficulties(中文数组)。"
-        "不要使用“作者姿态”这类模糊表述。\n\n"
-        f"标题：{article['title']}\n文章：\n{truncate_text(article_text(article))}"
+        “请生成高质量双语文章总览，必须返回以下所有JSON字段（不可省略）：”
+        “main_idea_zh（中文主旨，一句话），”
+        “main_idea_en（直接引用文章中最能概括主旨的英文原句，不要翻译），”
+        “core_viewpoints（数组，每项含zh中文分析和en英文原句，en必须直接引自文章原文），”
+        “structure（中文字符串数组，文章层次结构），”
+        “key_vocabulary（数组，每项含term英文词和translation中文义），”
+        “background_zh（中文背景知识），”
+        “reading_difficulties_zh（中文字符串数组，阅读难点）。”
+        “en字段必须是文章原文句子，禁止翻译或改写。\n\n”
+        f”标题：{article['title']}\n文章：\n{truncate_text(article_text(article))}”
     )
     result, meta = call_ai_json("deepseek", SYSTEM_TEACHER, prompt, fallback)
-    update_article(article_id, lambda a: a.update({"overview": result}))
+    try:
+        update_article(article_id, lambda a: a.update({"overview": result}))
+    except Exception:
+        pass
     return {"overview": result, "meta": meta}
 
 
@@ -1274,7 +1306,10 @@ def paragraph_analysis(article_id: str) -> dict[str, Any]:
     )
     result, meta = call_ai_json("deepseek", SYSTEM_TEACHER, prompt, fallback)
     paragraphs = result.get("paragraphs", fallback["paragraphs"])
-    update_article(article_id, lambda a: a.update({"paragraph_analysis": paragraphs}))
+    try:
+        update_article(article_id, lambda a: a.update({"paragraph_analysis": paragraphs}))
+    except Exception:
+        pass
     return {"paragraphs": paragraphs, "meta": meta}
 
 
@@ -1292,7 +1327,10 @@ def long_sentence_analysis(article_id: str) -> dict[str, Any]:
     )
     result, meta = call_ai_json("deepseek", SYSTEM_TEACHER, prompt, fallback)
     sentences = result.get("sentences", fallback["sentences"])
-    update_article(article_id, lambda a: a.update({"long_sentence_analysis": sentences}))
+    try:
+        update_article(article_id, lambda a: a.update({"long_sentence_analysis": sentences}))
+    except Exception:
+        pass
     return {"sentences": sentences, "meta": meta}
 
 
@@ -1318,14 +1356,19 @@ def vocabulary_analysis(article_id: str) -> dict[str, Any]:
     article = find_article(article_id)
     fallback = {"items": vocabulary_fallback(article)}
     prompt = (
-        "请从文章中筛选真正值得学习的词汇和表达，返回JSON字段items。每项包含：term, layer, translation, "
-        "context, collocations, synonym_note, example, imitation_task。layer只能是：核心必会词、阅读理解词、"
-        "写作可用词、学术表达词、熟词僻义词。不要列所有生词。\n\n"
-        + truncate_text(article_text(article))
+        "请从文章中筛选真正值得学习的词汇和表达，返回JSON字段items（数组，最多20项）。"
+        "每项包含：term, layer, translation, context, collocations（字符串数组）, synonym_note, example, imitation_task。"
+        "layer只能是：核心必会词、阅读理解词、写作可用词、学术表达词、熟词僻义词。不要列常见简单词。\n\n"
+        + truncate_text(article_text(article), 8000)
     )
     result, meta = call_ai_json("deepseek", SYSTEM_TEACHER, prompt, fallback)
     items = result.get("items", fallback["items"])
-    update_article(article_id, lambda a: a.update({"vocabulary_analysis": items}))
+    if not isinstance(items, list):
+        items = fallback["items"]
+    try:
+        update_article(article_id, lambda a: a.update({"vocabulary_analysis": items}))
+    except Exception:
+        pass
     return {"items": items, "meta": meta}
 
 
@@ -1353,7 +1396,10 @@ def reading_questions(article_id: str) -> dict[str, Any]:
     questions = result.get("questions", fallback["questions"])
     for q in questions:
         q["id"] = q.get("id") or stable_id(article_id, q.get("question", "question"))
-    update_article(article_id, lambda a: a.update({"reading_questions": questions}))
+    try:
+        update_article(article_id, lambda a: a.update({"reading_questions": questions}))
+    except Exception:
+        pass
     return {"questions": questions, "meta": meta}
 
 
@@ -1487,6 +1533,30 @@ def save_progress(request: ProgressRequest) -> dict[str, Any]:
 @app.get("/api/progress")
 def get_progress() -> dict[str, Any]:
     return {"items": load_json(PROGRESS_PATH, {})}
+
+
+@app.post("/api/articles/{article_id}/notes")
+def save_notes(article_id: str, request: NotesRequest) -> dict[str, Any]:
+    try:
+        update_article(article_id, lambda a: a.update({"notes": request.notes}))
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+@app.delete("/api/sources/{source_id}")
+def delete_source(source_id: str) -> dict[str, Any]:
+    def apply(library: dict[str, Any]) -> None:
+        sources = library.get("sources", [])
+        source = next((s for s in sources if s["id"] == source_id), None)
+        if not source:
+            raise HTTPException(status_code=404, detail="Source not found")
+        stored_path = Path(source.get("stored_path", ""))
+        safe_unlink(stored_path)
+        library["sources"] = [s for s in sources if s["id"] != source_id]
+    mutate_library(apply)
+    lib = load_json(LIBRARY_PATH, {"sources": []})
+    return {"library": lib, "summary": library_summary(lib)}
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
