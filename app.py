@@ -7,6 +7,7 @@ import html
 import json
 import os
 import re
+import requests
 import shutil
 import time
 import uuid
@@ -40,7 +41,7 @@ OUTPUTS_PATH = DATA_DIR / "outputs.json"
 PROGRESS_PATH = DATA_DIR / "progress.json"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 
-SUPPORTED_EXTENSIONS = {".epub", ".docx", ".pdf", ".txt"}
+SUPPORTED_EXTENSIONS = {".epub", ".docx", ".txt"}
 MAX_AI_CHARS = 10000
 
 AI_PROVIDERS = {
@@ -54,6 +55,17 @@ AI_PROVIDERS = {
         "base_url": os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
         "model": os.getenv("QWEN_MODEL", "qwen-plus"),
     },
+}
+DEFAULT_TASK_PROVIDERS = {
+    "text": "deepseek",
+    "image": "qwen",
+    "audio": "qwen",
+}
+QWEN_TTS_DEFAULTS = {
+    "base_url": os.getenv("QWEN_TTS_BASE_URL", os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1")),
+    "model": os.getenv("QWEN_TTS_MODEL", "qwen3-tts-flash"),
+    "voice": os.getenv("QWEN_TTS_VOICE", "Ethan"),
+    "language_type": os.getenv("QWEN_TTS_LANGUAGE_TYPE", "English"),
 }
 
 STOPWORDS = {
@@ -163,12 +175,30 @@ class ProgressRequest(BaseModel):
 
 class ModelSettingsRequest(BaseModel):
     primary_provider: str | None = None
+    text_provider: str | None = None
+    image_provider: str | None = None
+    audio_provider: str | None = None
     deepseek_api_key: str | None = None
     deepseek_base_url: str | None = None
     deepseek_model: str | None = None
     qwen_api_key: str | None = None
     qwen_base_url: str | None = None
     qwen_model: str | None = None
+    qwen_image_model: str | None = None
+    qwen_tts_base_url: str | None = None
+    qwen_tts_model: str | None = None
+    qwen_tts_voice: str | None = None
+    qwen_tts_language_type: str | None = None
+
+
+class SpeechRequest(BaseModel):
+    text: str
+    voice: str | None = None
+    language_type: str | None = None
+
+
+class DictationItemsRequest(BaseModel):
+    count: int = 6
 
 
 class NotesRequest(BaseModel):
@@ -261,11 +291,27 @@ def normalize_base_url(value: str | None) -> str:
     return url
 
 
-def primary_provider(settings: dict[str, Any] | None = None, overrides: dict[str, Any] | None = None) -> str:
+def normalize_dashscope_api_url(value: str | None) -> str:
+    url = (value or "").strip().rstrip("/")
+    for suffix in ("/services/aigc/multimodal-generation/generation", "/multimodal-generation/generation"):
+        if url.endswith(suffix):
+            url = url[: -len(suffix)].rstrip("/")
+            break
+    return url
+
+
+def task_provider(task: str, settings: dict[str, Any] | None = None, overrides: dict[str, Any] | None = None) -> str:
     settings = settings if settings is not None else load_settings()
     overrides = overrides or {}
-    provider = (overrides.get("primary_provider") or settings.get("primary_provider") or "deepseek").strip().lower()
-    return provider if provider in AI_PROVIDERS else "deepseek"
+    default = DEFAULT_TASK_PROVIDERS.get(task, "deepseek")
+    legacy_primary = settings.get("primary_provider") if task == "text" else None
+    value = (overrides.get(f"{task}_provider") or settings.get(f"{task}_provider") or legacy_primary or default)
+    provider = str(value).strip().lower()
+    return provider if provider in AI_PROVIDERS else default
+
+
+def primary_provider(settings: dict[str, Any] | None = None, overrides: dict[str, Any] | None = None) -> str:
+    return task_provider("text", settings=settings, overrides=overrides)
 
 
 def resolve_provider(provider: str, overrides: dict[str, Any] | None = None, prefer_primary: bool = True) -> str:
@@ -299,6 +345,42 @@ def provider_config(provider: str, overrides: dict[str, Any] | None = None) -> d
         "base_url": base_url,
         "model": model,
         "api_key_env": defaults["api_key_env"],
+    }
+
+
+def qwen_tts_config(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    settings = load_settings()
+    overrides = overrides or {}
+    qwen = provider_config("qwen", overrides)
+    dashscope_key = (
+        (overrides.get("dashscope_api_key") or "").strip()
+        or (settings.get("dashscope_api_key") or "").strip()
+        or (os.getenv("DASHSCOPE_API_KEY") or "").strip()
+    )
+    base_url = normalize_dashscope_api_url(
+        (overrides.get("qwen_tts_base_url") or "").strip()
+        or settings.get("qwen_tts_base_url")
+        or QWEN_TTS_DEFAULTS["base_url"]
+    )
+    return {
+        "api_key": qwen["api_key"] or dashscope_key,
+        "api_key_env": f"{qwen['api_key_env']} / DASHSCOPE_API_KEY",
+        "base_url": base_url,
+        "model": (
+            (overrides.get("qwen_tts_model") or "").strip()
+            or (settings.get("qwen_tts_model") or "").strip()
+            or QWEN_TTS_DEFAULTS["model"]
+        ),
+        "voice": (
+            (overrides.get("qwen_tts_voice") or "").strip()
+            or (settings.get("qwen_tts_voice") or "").strip()
+            or QWEN_TTS_DEFAULTS["voice"]
+        ),
+        "language_type": (
+            (overrides.get("qwen_tts_language_type") or "").strip()
+            or (settings.get("qwen_tts_language_type") or "").strip()
+            or QWEN_TTS_DEFAULTS["language_type"]
+        ),
     }
 
 
@@ -499,9 +581,12 @@ def extract_epub_articles(path: Path, source_id: str) -> list[dict[str, Any]]:
     articles: list[dict[str, Any]] = []
     with zipfile.ZipFile(path) as book:
         names = book.namelist()
-        html_names = [n for n in names if n.lower().endswith((".html", ".xhtml")) and "/article_" in n.lower()]
-        if not html_names:
+        article_names = [n for n in names if n.lower().endswith((".html", ".xhtml")) and "/article_" in n.lower()]
+        html_names = article_names
+        require_article_path = True
+        if not article_names:
             html_names = [n for n in names if n.lower().endswith((".html", ".xhtml"))]
+            require_article_path = False
         for index, name in enumerate(html_names, 1):
             raw = book.read(name).decode("utf-8", errors="ignore")
             soup = BeautifulSoup(raw, "html.parser")
@@ -517,7 +602,7 @@ def extract_epub_articles(path: Path, source_id: str) -> list[dict[str, Any]]:
                 paragraphs = infer_paragraphs_from_text(clean_text(soup.get_text(" | ")))
             if len(" ".join(paragraphs).split()) < 80:
                 continue
-            if not is_valid_article_page(name, title, paragraphs):
+            if not is_valid_article_page(name, title, paragraphs, require_article_path=require_article_path):
                 continue
             if not title:
                 title = infer_title(paragraphs, fallback=f"Article {index}")
@@ -625,9 +710,9 @@ def infer_section(path: str) -> str:
     return f"Feed {match.group(1)}" if match else "Articles"
 
 
-def is_valid_article_page(path: str, title: str, paragraphs: list[str]) -> bool:
+def is_valid_article_page(path: str, title: str, paragraphs: list[str], require_article_path: bool = True) -> bool:
     low_path = path.lower()
-    if "/article_" not in low_path:
+    if require_article_path and "/article_" not in low_path:
         return False
     low_title = (title or "").strip().lower()
     if low_title in {"table of contents", "contents", "目录", "未知", "unknown"}:
@@ -652,7 +737,7 @@ def parse_upload(path: Path, source_id: str) -> list[dict[str, Any]]:
     if suffix == ".txt":
         return extract_txt_article(path, source_id)
     if suffix == ".pdf":
-        raise HTTPException(400, "当前版本建议上传 EPUB 或 DOCX；PDF 结构化解析暂未启用。")
+        raise HTTPException(400, "当前版本支持 EPUB、DOCX 或 TXT；PDF 请先转换为 DOCX/TXT。")
     raise HTTPException(400, f"Unsupported file type: {suffix}")
 
 
@@ -694,6 +779,22 @@ def update_article(article_id: str, updater: Callable[[dict[str, Any]], None]) -
                     return article
         raise HTTPException(404, "Article not found")
     return mutate_library(apply)
+
+
+def cached_meta(provider: str, model: str = "saved-result") -> dict[str, Any]:
+    return {
+        "provider": provider,
+        "requested_provider": provider,
+        "primary_provider": primary_provider(),
+        "model": model,
+        "base_url": "",
+        "used_ai": False,
+        "cached": True,
+    }
+
+
+def save_article_fields(article_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+    return update_article(article_id, lambda article: article.update(fields))
 
 
 def ai_available(
@@ -773,6 +874,103 @@ def call_ai_json(
         return fallback, fallback_meta
 
 
+def coerce_list(value: Any, fallback: list[Any] | None = None) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value is None or value == "":
+        return list(fallback or [])
+    if isinstance(value, (tuple, set)):
+        return list(value)
+    if isinstance(value, dict):
+        nested = value.get("items")
+        if isinstance(nested, list):
+            return nested
+        return list(value.values()) if value else list(fallback or [])
+    if isinstance(value, str):
+        parts = [item.strip() for item in re.split(r"\r?\n|[;；,，]", value) if item.strip()]
+        return parts or list(fallback or [])
+    return [value]
+
+
+def coerce_string_list(value: Any, fallback: list[Any] | None = None) -> list[str]:
+    items = coerce_list(value, fallback)
+    result: list[str] = []
+    for item in items:
+        if item is None:
+            continue
+        if isinstance(item, dict):
+            text = item.get("term") or item.get("text") or item.get("word") or item.get("note") or json.dumps(item, ensure_ascii=False)
+        else:
+            text = str(item)
+        text = clean_text(text)
+        if text:
+            result.append(text)
+    return result
+
+
+def coerce_dict(value: Any, fallback: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(value, dict):
+        merged = dict(fallback)
+        merged.update(value)
+        return merged
+    return dict(fallback)
+
+
+def normalize_dictation_feedback(result: Any, fallback: dict[str, Any]) -> dict[str, Any]:
+    data = coerce_dict(result, fallback)
+    return {
+        "score": data.get("score", fallback.get("score", "-")),
+        "original": clean_text(str(data.get("original") or fallback.get("original") or "")),
+        "user_answer": clean_text(str(data.get("user_answer") or fallback.get("user_answer") or "")),
+        "missing_words": coerce_string_list(data.get("missing_words"), fallback.get("missing_words", [])),
+        "spelling_or_extra": coerce_string_list(data.get("spelling_or_extra"), fallback.get("spelling_or_extra", [])),
+        "listening_notes": coerce_string_list(data.get("listening_notes"), fallback.get("listening_notes", [])),
+        "why_difficult": clean_text(str(data.get("why_difficult") or fallback.get("why_difficult") or "")),
+    }
+
+
+def normalize_dictation_items(raw_items: Any, article: dict[str, Any], count: int) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    article_full_text = article_text(article)
+    raw_list = [raw_items] if isinstance(raw_items, str) else coerce_list(raw_items)
+    for item in raw_list[:count]:
+        if isinstance(item, str):
+            item = {"source": item}
+        if not isinstance(item, dict):
+            continue
+        source = clean_text(str(item.get("source") or item.get("sentence") or item.get("text") or ""))
+        if not source:
+            continue
+        normalized.append({
+            "id": str(item.get("id") or stable_id(article["id"], "dictation", source)),
+            "source": source,
+            "focus": clean_text(str(item.get("focus") or "听主干、功能词、词尾辅音和连读")),
+            "rounds": coerce_string_list(item.get("rounds"), ["完整听一遍", "逐句听写", "对照纠错", "跟读模仿"]),
+            "from_article": source in article_full_text,
+        })
+    return normalized
+
+
+def normalize_reading_questions(raw_questions: Any, article_id: str, fallback: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in coerce_list(raw_questions, fallback):
+        if isinstance(item, str):
+            item = {"question": item}
+        if not isinstance(item, dict):
+            continue
+        question = clean_text(str(item.get("question") or ""))
+        if not question:
+            continue
+        normalized.append({
+            "id": str(item.get("id") or stable_id(article_id, question)),
+            "question": question,
+            "focus": clean_text(str(item.get("focus") or "content and expression")),
+            "keywords": coerce_string_list(item.get("keywords"), []),
+            "reference_answer": clean_text(str(item.get("reference_answer") or "")),
+        })
+    return normalized or fallback
+
+
 def text_check_fallback(article: dict[str, Any]) -> dict[str, Any]:
     clean_result = clean_article_paragraphs(article.get("paragraphs", []))
     cleaned = clean_result["cleaned_paragraphs"]
@@ -796,18 +994,18 @@ def text_check_fallback(article: dict[str, Any]) -> dict[str, Any]:
 def overview_fallback(article: dict[str, Any]) -> dict[str, Any]:
     text = article_text(article)
     sentences = split_sentences(text)
-    keywords = [item[“term”] for item in article[“stats”].get(“top_terms”, [])[:8]]
+    keywords = [item["term"] for item in article["stats"].get("top_terms", [])[:8]]
     return {
-        “main_idea_zh”: f”本文围绕”{article['title']}”展开，核心内容可从标题、首段和高频关键词入手理解。”,
-        “main_idea_en”: sentences[0] if sentences else “”,
-        “core_viewpoints”: [
-            {“zh”: “文章提出一个值得分析的现象或问题。”, “en”: sentences[0] if sentences else “”},
-            {“zh”: “后文通过事实、解释或对比推进论证。”, “en”: sentences[min(2, len(sentences) - 1)] if len(sentences) > 2 else “”},
+        "main_idea_zh": f"本文围绕{article['title']}展开，核心内容可从标题、首段和高频关键词入手理解。",
+        "main_idea_en": sentences[0] if sentences else "",
+        "core_viewpoints": [
+            {"zh": "文章提出一个值得分析的现象或问题。", "en": sentences[0] if sentences else ""},
+            {"zh": "后文通过事实、解释或对比推进论证。", "en": sentences[min(2, len(sentences) - 1)] if len(sentences) > 2 else ""},
         ],
-        “structure”: [“引入话题”, “解释背景或原因”, “展开影响与争议”, “形成判断或开放结论”],
-        “key_vocabulary”: [{“term”: k, “translation”: MINI_GLOSSARY.get(k, “结合原文理解”)} for k in keywords],
-        “background_zh”: “请结合文章栏目和标题补充相关经济、社会或时事背景。”,
-        “reading_difficulties_zh”: [“注意长句中的插入语、让步关系和因果关系。”, “先抓段落主旨，再处理细节。”],
+        "structure": ["引入话题", "解释背景或原因", "展开影响与争议", "形成判断或开放结论"],
+        "key_vocabulary": [{"term": k, "translation": MINI_GLOSSARY.get(k, "结合原文理解")} for k in keywords],
+        "background_zh": "请结合文章栏目和标题补充相关经济、社会或时事背景。",
+        "reading_difficulties_zh": ["注意长句中的插入语、让步关系和因果关系。", "先抓段落主旨，再处理细节。"],
     }
 
 
@@ -963,6 +1161,84 @@ def dictation_feedback_fallback(source: str, answer: str) -> dict[str, Any]:
     }
 
 
+def dictation_items_fallback(article: dict[str, Any], count: int = 6) -> list[dict[str, Any]]:
+    candidates = []
+    for sentence in split_sentences(article_text(article)):
+        word_count = len(words(sentence))
+        if 8 <= word_count <= 34:
+            candidates.append((abs(word_count - 18), sentence))
+    if not candidates:
+        candidates = [(0, sentence) for sentence in split_sentences(article_text(article))[:count]]
+    selected = [sentence for _, sentence in sorted(candidates, key=lambda item: (item[0], len(item[1])))[:count]]
+    return [
+        {
+            "id": stable_id(article["id"], "dictation", sentence),
+            "source": sentence,
+            "focus": "听主干、功能词、词尾辅音和连读",
+            "rounds": ["完整听一遍", "逐句听写", "对照纠错", "跟读模仿"],
+        }
+        for sentence in selected
+    ]
+
+
+def dashscope_generation_url(base_url: str) -> str:
+    return f"{normalize_dashscope_api_url(base_url)}/services/aigc/multimodal-generation/generation"
+
+
+def synthesize_qwen_speech(text: str, voice: str | None = None, language_type: str | None = None) -> dict[str, Any]:
+    config = qwen_tts_config()
+    if not config["api_key"]:
+        raise HTTPException(400, f"{config['api_key_env']} 未配置，已无法调用 Qwen 朗读。")
+    clean = clean_text(text)
+    if not clean:
+        raise HTTPException(400, "朗读文本不能为空。")
+    payload = {
+        "model": config["model"],
+        "input": {
+            "text": truncate_text(clean, 1800),
+            "voice": voice or config["voice"],
+            "language_type": language_type or config["language_type"],
+        },
+    }
+    try:
+        response = requests.post(
+            dashscope_generation_url(config["base_url"]),
+            headers={
+                "Authorization": f"Bearer {config['api_key']}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=90,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(502, f"Qwen 朗读请求失败：{exc}") from exc
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HTTPException(response.status_code or 502, "Qwen 朗读返回了非 JSON 响应。") from exc
+    if response.status_code >= 400 or data.get("status_code", 200) >= 400:
+        raise HTTPException(response.status_code or 502, data.get("message") or data.get("code") or "Qwen 朗读失败。")
+    audio = ((data.get("output") or {}).get("audio") or {})
+    audio_url = audio.get("url")
+    audio_data = audio.get("data")
+    if not audio_url and not audio_data:
+        raise HTTPException(502, "Qwen 朗读没有返回音频。")
+    return {
+        "audio_url": audio_url,
+        "audio_data": audio_data,
+        "mime_type": "audio/wav",
+        "meta": {
+            "provider": "qwen",
+            "model": config["model"],
+            "voice": payload["input"]["voice"],
+            "language_type": payload["input"]["language_type"],
+            "base_url": config["base_url"],
+            "used_ai": True,
+            "request_id": data.get("request_id"),
+        },
+    }
+
+
 def writing_feedback_fallback(task: str, content: str, article: dict[str, Any]) -> dict[str, Any]:
     article_terms = [item["term"] for item in article["stats"].get("top_terms", [])[:8]]
     used = [t for t in article_terms if re.search(rf"\b{re.escape(t)}\b", content, re.I)]
@@ -1072,21 +1348,40 @@ def get_config() -> dict[str, Any]:
 
 def provider_public_config(name: str) -> dict[str, Any]:
     config = provider_config(name)
-    return {
+    result = {
         "configured": bool(config["api_key"]),
         "model": config["model"],
         "base_url": config["base_url"],
         "api_key_env": config["api_key_env"],
         "api_key_masked": mask_secret(config["api_key"]),
     }
+    if name == "qwen":
+        tts = qwen_tts_config()
+        settings = load_settings()
+        result["image_model"] = settings.get("qwen_image_model", "qwen-vl-plus")
+        result["tts"] = {
+            "configured": bool(tts["api_key"]),
+            "model": tts["model"],
+            "voice": tts["voice"],
+            "language_type": tts["language_type"],
+            "base_url": tts["base_url"],
+        }
+    return result
 
 
 def settings_response() -> dict[str, Any]:
     settings = load_settings()
-    primary = primary_provider(settings=settings)
+    text = task_provider("text", settings=settings)
+    image = task_provider("image", settings=settings)
+    audio = task_provider("audio", settings=settings)
     return {
-        "primary_provider": primary,
-        "primary_model": provider_config(primary)["model"],
+        "primary_provider": text,
+        "primary_model": provider_config(text)["model"],
+        "task_providers": {
+            "text": text,
+            "image": image,
+            "audio": audio,
+        },
         "providers": {name: provider_public_config(name) for name in AI_PROVIDERS},
     }
 
@@ -1107,11 +1402,16 @@ def update_settings(request: ModelSettingsRequest) -> dict[str, Any]:
         if key == "primary_provider":
             if value in AI_PROVIDERS:
                 settings[key] = value
+                settings["text_provider"] = value
+            continue
+        if key.endswith("_provider"):
+            if value in AI_PROVIDERS:
+                settings[key] = value
             continue
         if key.endswith("_api_key") and not value:
             continue
         if key.endswith("_base_url") and value:
-            value = normalize_base_url(value)
+            value = normalize_dashscope_api_url(value) if key == "qwen_tts_base_url" else normalize_base_url(value)
         if value:
             settings[key] = value
         elif key in settings:
@@ -1137,6 +1437,15 @@ def test_provider(provider: str, request: ModelSettingsRequest | None = None) ->
     return {"result": result, "meta": meta}
 
 
+@app.post("/api/audio/speech")
+def audio_speech(request: SpeechRequest) -> dict[str, Any]:
+    settings = load_settings()
+    provider = task_provider("audio", settings=settings)
+    if provider != "qwen":
+        raise HTTPException(400, "当前仅 Qwen 配置了 AI 朗读模型。")
+    return synthesize_qwen_speech(request.text, request.voice, request.language_type)
+
+
 @app.get("/api/library")
 def get_library() -> dict[str, Any]:
     library = load_json(LIBRARY_PATH, {"sources": []})
@@ -1150,7 +1459,7 @@ async def upload_file(file: UploadFile = File(...)) -> dict[str, Any]:
     ensure_dirs()
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in SUPPORTED_EXTENSIONS:
-        raise HTTPException(400, "请上传 EPUB、DOCX、PDF 或 TXT。")
+        raise HTTPException(400, "请上传 EPUB、DOCX 或 TXT。PDF 请先转换为 DOCX/TXT。")
     source_id = stable_id(file.filename or "upload", str(time.time()), str(uuid.uuid4()))
     safe_name = re.sub(r"[^A-Za-z0-9_.\-\u4e00-\u9fff]", "_", file.filename or f"upload{suffix}")
     saved_path = UPLOAD_DIR / f"{source_id}_{safe_name}"
@@ -1162,8 +1471,16 @@ async def upload_file(file: UploadFile = File(...)) -> dict[str, Any]:
     if existing:
         safe_unlink(saved_path)
         return {"source": existing, "summary": library_summary(library), "duplicate": True}
-    articles = parse_upload(saved_path, source_id)
+    try:
+        articles = parse_upload(saved_path, source_id)
+    except HTTPException:
+        safe_unlink(saved_path)
+        raise
+    except Exception as exc:
+        safe_unlink(saved_path)
+        raise HTTPException(400, f"文件解析失败：{exc}") from exc
     if not articles:
+        safe_unlink(saved_path)
         raise HTTPException(400, "没有解析到可学习的文章。")
     source = {
         "id": source_id,
@@ -1182,7 +1499,8 @@ async def upload_file(file: UploadFile = File(...)) -> dict[str, Any]:
 _AI_PRESERVE_FIELDS = [
     "overview", "paragraph_analysis", "vocabulary_analysis",
     "long_sentence_analysis", "reading_questions", "text_check",
-    "learning_pack", "favorite", "favorite_at", "last_opened_at", "notes",
+    "dictation_items", "sentence_analyses", "reading_responses", "dictation_responses",
+    "last_writing_feedback", "learning_pack", "favorite", "favorite_at", "last_opened_at", "notes",
 ]
 
 
@@ -1244,8 +1562,10 @@ def toggle_favorite(article_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/articles/{article_id}/text-check")
-def text_check(article_id: str) -> dict[str, Any]:
+def text_check(article_id: str, refresh: bool = False) -> dict[str, Any]:
     article = find_article(article_id)
+    if article.get("text_check") and not refresh:
+        return {"text_check": article["text_check"], "meta": cached_meta("deepseek"), "article": article}
     fallback = text_check_fallback(article)
     prompt = (
         "请在已完成基础清洗的英文文章上做AI二次检查，返回JSON字段：cleaned_paragraphs(字符串数组), "
@@ -1264,40 +1584,38 @@ def text_check(article_id: str) -> dict[str, Any]:
         article_data["normalization_notes"] = result["normalization_notes"]
         article_data["text_check"] = result
         article_data["cleaned_stats"] = article_stats(cleaned)
-    try:
-        updated = update_article(article_id, apply)
-    except Exception:
-        updated = find_article(article_id)
+    updated = update_article(article_id, apply)
     return {"text_check": result, "meta": meta, "article": updated}
 
 
 @app.post("/api/articles/{article_id}/overview")
-def article_overview(article_id: str) -> dict[str, Any]:
+def article_overview(article_id: str, refresh: bool = False) -> dict[str, Any]:
     article = find_article(article_id)
+    if article.get("overview") and not refresh:
+        return {"overview": article["overview"], "meta": cached_meta("deepseek"), "article": article}
     fallback = overview_fallback(article)
     prompt = (
-        “请生成高质量双语文章总览，必须返回以下所有JSON字段（不可省略）：”
-        “main_idea_zh（中文主旨，一句话），”
-        “main_idea_en（直接引用文章中最能概括主旨的英文原句，不要翻译），”
-        “core_viewpoints（数组，每项含zh中文分析和en英文原句，en必须直接引自文章原文），”
-        “structure（中文字符串数组，文章层次结构），”
-        “key_vocabulary（数组，每项含term英文词和translation中文义），”
-        “background_zh（中文背景知识），”
-        “reading_difficulties_zh（中文字符串数组，阅读难点）。”
-        “en字段必须是文章原文句子，禁止翻译或改写。\n\n”
-        f”标题：{article['title']}\n文章：\n{truncate_text(article_text(article))}”
+        "请生成高质量双语文章总览，必须返回以下所有JSON字段（不可省略）："
+        "main_idea_zh（中文主旨，一句话），"
+        "main_idea_en（直接引用文章中最能概括主旨的英文原句，不要翻译），"
+        "core_viewpoints（数组，每项含zh中文分析和en英文原句，en必须直接引自文章原文），"
+        "structure（中文字符串数组，文章层次结构），"
+        "key_vocabulary（数组，每项含term英文词和translation中文义），"
+        "background_zh（中文背景知识），"
+        "reading_difficulties_zh（中文字符串数组，阅读难点）。"
+        "en字段必须是文章原文句子，禁止翻译或改写。\n\n"
+        f"标题：{article['title']}\n文章：\n{truncate_text(article_text(article))}"
     )
     result, meta = call_ai_json("deepseek", SYSTEM_TEACHER, prompt, fallback)
-    try:
-        update_article(article_id, lambda a: a.update({"overview": result}))
-    except Exception:
-        pass
-    return {"overview": result, "meta": meta}
+    updated = save_article_fields(article_id, {"overview": result})
+    return {"overview": result, "meta": meta, "article": updated}
 
 
 @app.post("/api/articles/{article_id}/paragraphs/analyze")
-def paragraph_analysis(article_id: str) -> dict[str, Any]:
+def paragraph_analysis(article_id: str, refresh: bool = False) -> dict[str, Any]:
     article = find_article(article_id)
+    if article.get("paragraph_analysis") and not refresh:
+        return {"paragraphs": coerce_list(article["paragraph_analysis"]), "meta": cached_meta("deepseek"), "article": article}
     fallback = {"paragraphs": paragraph_analysis_fallback(article)}
     prompt = (
         "请逐段分析英文文章，返回JSON字段paragraphs。每段对象必须包含：index, main_idea, function, "
@@ -1305,17 +1623,16 @@ def paragraph_analysis(article_id: str) -> dict[str, Any]:
         + truncate_text(article_text(article))
     )
     result, meta = call_ai_json("deepseek", SYSTEM_TEACHER, prompt, fallback)
-    paragraphs = result.get("paragraphs", fallback["paragraphs"])
-    try:
-        update_article(article_id, lambda a: a.update({"paragraph_analysis": paragraphs}))
-    except Exception:
-        pass
-    return {"paragraphs": paragraphs, "meta": meta}
+    paragraphs = coerce_list(result.get("paragraphs") if isinstance(result, dict) else result, fallback["paragraphs"])
+    updated = save_article_fields(article_id, {"paragraph_analysis": paragraphs})
+    return {"paragraphs": paragraphs, "meta": meta, "article": updated}
 
 
 @app.post("/api/articles/{article_id}/long-sentences")
-def long_sentence_analysis(article_id: str) -> dict[str, Any]:
+def long_sentence_analysis(article_id: str, refresh: bool = False) -> dict[str, Any]:
     article = find_article(article_id)
+    if article.get("long_sentence_analysis") and not refresh:
+        return {"sentences": coerce_list(article["long_sentence_analysis"]), "meta": cached_meta("deepseek"), "article": article}
     fallback = {"sentences": long_sentence_fallback(article)}
     prompt = (
         "请选择文章中最值得精读的长难句并解析，返回JSON字段sentences。每项必须按学习顺序包含："
@@ -1326,17 +1643,42 @@ def long_sentence_analysis(article_id: str) -> dict[str, Any]:
         + truncate_text(article_text(article))
     )
     result, meta = call_ai_json("deepseek", SYSTEM_TEACHER, prompt, fallback)
-    sentences = result.get("sentences", fallback["sentences"])
-    try:
-        update_article(article_id, lambda a: a.update({"long_sentence_analysis": sentences}))
-    except Exception:
-        pass
-    return {"sentences": sentences, "meta": meta}
+    sentences = coerce_list(result.get("sentences") if isinstance(result, dict) else result, fallback["sentences"])
+    updated = save_article_fields(article_id, {"long_sentence_analysis": sentences})
+    return {"sentences": sentences, "meta": meta, "article": updated}
+
+
+@app.post("/api/articles/{article_id}/dictation/items")
+def dictation_items(article_id: str, request: DictationItemsRequest | None = None, refresh: bool = False) -> dict[str, Any]:
+    article = find_article(article_id)
+    count = min(max((request.count if request else 6), 1), 12)
+    existing = normalize_dictation_items(article.get("dictation_items"), article, count)
+    if existing and len(existing) >= count and not refresh:
+        return {"items": existing[:count], "meta": cached_meta("qwen"), "article": article}
+    fallback = {"items": dictation_items_fallback(article, count)}
+    prompt = (
+        "请为这篇文章独立生成听写与跟读材料，返回JSON字段items（数组）。"
+        "每项包含id, source, focus, rounds。source必须是文章英文原句或轻微清理后的完整英文句子，"
+        "长度适合听写，优先选择8到28词、发音清晰但有训练价值的句子。"
+        "不要依赖长难句解析结果。\n\n"
+        + truncate_text(article_text(article), 8000)
+    )
+    result, meta = call_ai_json("qwen", SYSTEM_TEACHER, prompt, fallback, prefer_primary=False)
+    items = result.get("items", fallback["items"]) if isinstance(result, dict) else result
+    normalized = normalize_dictation_items(items, article, count)
+    if not normalized:
+        normalized = fallback["items"]
+    updated = save_article_fields(article_id, {"dictation_items": normalized})
+    return {"items": normalized, "meta": meta, "article": updated}
 
 
 @app.post("/api/articles/{article_id}/sentence/analyze")
 def sentence_analysis(article_id: str, request: SentenceRequest) -> dict[str, Any]:
     article = find_article(article_id)
+    sentence_key = stable_id(article_id, request.sentence)
+    cached = (article.get("sentence_analyses") or {}).get(sentence_key)
+    if cached and not request.user_imitation:
+        return {"analysis": cached, "meta": cached_meta("deepseek"), "article": article}
     fallback = analyze_sentence_fallback(request.sentence, article)
     prompt = (
         "请分析这个英文句子，返回JSON字段：sentence, difficult_vocabulary, sentence_structure, "
@@ -1348,12 +1690,17 @@ def sentence_analysis(article_id: str, request: SentenceRequest) -> dict[str, An
         f"文章标题：{article['title']}\n句子：{request.sentence}\n用户仿写：{request.user_imitation or ''}"
     )
     result, meta = call_ai_json("deepseek", SYSTEM_TEACHER, prompt, fallback)
-    return {"analysis": result, "meta": meta}
+    analyses = dict(article.get("sentence_analyses") or {})
+    analyses[sentence_key] = result
+    updated = save_article_fields(article_id, {"sentence_analyses": analyses})
+    return {"analysis": result, "meta": meta, "article": updated}
 
 
 @app.post("/api/articles/{article_id}/vocabulary/analyze")
-def vocabulary_analysis(article_id: str) -> dict[str, Any]:
+def vocabulary_analysis(article_id: str, refresh: bool = False) -> dict[str, Any]:
     article = find_article(article_id)
+    if article.get("vocabulary_analysis") and not refresh:
+        return {"items": coerce_list(article["vocabulary_analysis"]), "meta": cached_meta("deepseek"), "article": article}
     fallback = {"items": vocabulary_fallback(article)}
     prompt = (
         "请从文章中筛选真正值得学习的词汇和表达，返回JSON字段items（数组，最多20项）。"
@@ -1362,14 +1709,9 @@ def vocabulary_analysis(article_id: str) -> dict[str, Any]:
         + truncate_text(article_text(article), 8000)
     )
     result, meta = call_ai_json("deepseek", SYSTEM_TEACHER, prompt, fallback)
-    items = result.get("items", fallback["items"])
-    if not isinstance(items, list):
-        items = fallback["items"]
-    try:
-        update_article(article_id, lambda a: a.update({"vocabulary_analysis": items}))
-    except Exception:
-        pass
-    return {"items": items, "meta": meta}
+    items = coerce_list(result.get("items") if isinstance(result, dict) else result, fallback["items"])
+    updated = save_article_fields(article_id, {"vocabulary_analysis": items})
+    return {"items": items, "meta": meta, "article": updated}
 
 
 @app.post("/api/articles/{article_id}/vocabulary/sentence-feedback")
@@ -1379,13 +1721,16 @@ def vocab_sentence_feedback(article_id: str, request: VocabSentenceRequest) -> d
         "请评价用户用目标词造句是否自然，返回JSON字段：naturalness, issue, improved_sentence, usage_tip。"
         f"\n目标词：{request.term}\n用户句子：{request.sentence}"
     )
-    result, meta = call_ai_json("qwen", SYSTEM_TEACHER, prompt, fallback)
+    result, meta = call_ai_json("qwen", SYSTEM_TEACHER, prompt, fallback, prefer_primary=False)
     return {"feedback": result, "meta": meta}
 
 
 @app.post("/api/articles/{article_id}/reading/questions")
-def reading_questions(article_id: str) -> dict[str, Any]:
+def reading_questions(article_id: str, refresh: bool = False) -> dict[str, Any]:
     article = find_article(article_id)
+    if article.get("reading_questions") and not refresh:
+        questions = normalize_reading_questions(article["reading_questions"], article_id, reading_questions_fallback(article))
+        return {"questions": questions, "meta": cached_meta("deepseek"), "article": article}
     fallback = {"questions": reading_questions_fallback(article)}
     prompt = (
         "请基于文章生成英文阅读理解输出题，返回JSON字段questions。每项包含id, question, focus, keywords, "
@@ -1393,14 +1738,13 @@ def reading_questions(article_id: str) -> dict[str, Any]:
         + truncate_text(article_text(article))
     )
     result, meta = call_ai_json("deepseek", SYSTEM_TEACHER, prompt, fallback)
-    questions = result.get("questions", fallback["questions"])
-    for q in questions:
-        q["id"] = q.get("id") or stable_id(article_id, q.get("question", "question"))
-    try:
-        update_article(article_id, lambda a: a.update({"reading_questions": questions}))
-    except Exception:
-        pass
-    return {"questions": questions, "meta": meta}
+    questions = normalize_reading_questions(
+        result.get("questions") if isinstance(result, dict) else result,
+        article_id,
+        fallback["questions"],
+    )
+    updated = save_article_fields(article_id, {"reading_questions": questions})
+    return {"questions": questions, "meta": meta, "article": updated}
 
 
 @app.post("/api/articles/{article_id}/reading/grade")
@@ -1412,21 +1756,49 @@ def grade_reading_answer(article_id: str, request: ReadingAnswerRequest) -> dict
         "vocabulary, improved_answer, reference_answer。先判断内容是否准确，再优化英文表达。\n\n"
         f"文章：\n{truncate_text(article_text(article), 10000)}\n\n问题：{request.question}\n学生答案：{request.answer}"
     )
-    result, meta = call_ai_json("qwen", SYSTEM_TEACHER, prompt, fallback)
+    result, meta = call_ai_json("qwen", SYSTEM_TEACHER, prompt, fallback, prefer_primary=False)
     save_output(SaveOutputRequest(article_id=article_id, kind="reading-answer", content=request.answer, feedback=result))
-    return {"feedback": result, "meta": meta}
+    responses = dict(article.get("reading_responses") or {})
+    responses[request.question_id] = {
+        "question_id": request.question_id,
+        "question": request.question,
+        "answer": request.answer,
+        "feedback": result,
+        "meta": meta,
+        "updated_at": now_iso(),
+    }
+    updated = save_article_fields(article_id, {"reading_responses": responses})
+    return {"feedback": result, "meta": meta, "article": updated}
 
 
 @app.post("/api/articles/{article_id}/dictation/feedback")
 def dictation_feedback(article_id: str, request: DictationRequest) -> dict[str, Any]:
+    article = find_article(article_id)
     fallback = dictation_feedback_fallback(request.source, request.answer)
     prompt = (
         "请批改听写答案，返回JSON字段：score, original, user_answer, missing_words, spelling_or_extra, "
         "listening_notes, why_difficult。解释弱读、连读、漏听和拼写问题。\n\n"
         f"原文：{request.source}\n学生听写：{request.answer}"
     )
-    result, meta = call_ai_json("qwen", SYSTEM_TEACHER, prompt, fallback)
-    return {"feedback": result, "meta": meta}
+    result, meta = call_ai_json("qwen", SYSTEM_TEACHER, prompt, fallback, prefer_primary=False)
+    result = normalize_dictation_feedback(result, fallback)
+    item_id = stable_id(article_id, "dictation", request.source)
+    for item in article.get("dictation_items") or []:
+        if item.get("source") == request.source:
+            item_id = item.get("id") or item_id
+            break
+    responses = dict(article.get("dictation_responses") or {})
+    responses[item_id] = {
+        "item_id": item_id,
+        "source": request.source,
+        "answer": request.answer,
+        "feedback": result,
+        "meta": meta,
+        "updated_at": now_iso(),
+    }
+    save_output(SaveOutputRequest(article_id=article_id, kind="dictation", content=request.answer, feedback=result))
+    updated = save_article_fields(article_id, {"dictation_responses": responses})
+    return {"feedback": result, "meta": meta, "article": updated}
 
 
 @app.post("/api/articles/{article_id}/writing/feedback")
@@ -1438,9 +1810,17 @@ def writing_feedback(article_id: str, request: WritingFeedbackRequest) -> dict[s
         "improved_version, next_step。重点看是否准确回应任务、逻辑是否清楚、是否使用文章表达。\n\n"
         f"文章标题：{article['title']}\n任务：{request.task}\n学生作文：{request.content}"
     )
-    result, meta = call_ai_json("qwen", SYSTEM_TEACHER, prompt, fallback)
+    result, meta = call_ai_json("qwen", SYSTEM_TEACHER, prompt, fallback, prefer_primary=False)
     save_output(SaveOutputRequest(article_id=article_id, kind="writing", content=request.content, feedback=result))
-    return {"feedback": result, "meta": meta}
+    writing_record = {
+        "task": request.task,
+        "content": request.content,
+        "feedback": result,
+        "meta": meta,
+        "updated_at": now_iso(),
+    }
+    updated = save_article_fields(article_id, {"last_writing_feedback": writing_record})
+    return {"feedback": result, "meta": meta, "article": updated}
 
 
 @app.post("/api/articles/{article_id}/pack")

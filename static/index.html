@@ -166,14 +166,26 @@
         <button id="closeSettingsBtn" class="ghost-btn">关闭</button>
       </div>
       <section class="analysis-card primary-model-card">
-        <h4>主模型</h4>
-        <label>所有 AI 分析优先使用
-          <select id="primaryProviderInput">
+        <h4>任务模型</h4>
+        <label>文本分析
+          <select id="textProviderInput">
             <option value="deepseek">DeepSeek</option>
             <option value="qwen">Qwen</option>
           </select>
         </label>
-        <p class="status-text">文章分析、句子分析、答题反馈和写作反馈都会优先调用这里选择的模型。</p>
+        <label>图片理解
+          <select id="imageProviderInput">
+            <option value="qwen">Qwen</option>
+            <option value="deepseek">DeepSeek</option>
+          </select>
+        </label>
+        <label>AI 朗读
+          <select id="audioProviderInput">
+            <option value="qwen">Qwen</option>
+            <option value="deepseek">DeepSeek</option>
+          </select>
+        </label>
+        <p class="status-text">文本、图片、音频可以分别选择模型；当前 AI 朗读仅 Qwen 有可用 TTS 配置。</p>
       </section>
       <div class="settings-grid">
         <section class="analysis-card">
@@ -200,6 +212,27 @@
               <option value="qwen-max">qwen-max</option>
             </select>
           </label>
+          <label>Image Model
+            <select id="qwenImageModelInput">
+              <option value="qwen-vl-plus">qwen-vl-plus</option>
+              <option value="qwen-vl-max">qwen-vl-max</option>
+            </select>
+          </label>
+          <label>TTS Base URL <input id="qwenTtsBaseInput" class="search" /></label>
+          <label>TTS Model
+            <select id="qwenTtsModelInput">
+              <option value="qwen3-tts-flash">qwen3-tts-flash</option>
+              <option value="qwen-tts">qwen-tts</option>
+            </select>
+          </label>
+          <label>TTS Voice <input id="qwenTtsVoiceInput" class="search" /></label>
+          <label>TTS Language
+            <select id="qwenTtsLanguageInput">
+              <option value="English">English</option>
+              <option value="Chinese">Chinese</option>
+              <option value="Auto">Auto</option>
+            </select>
+          </label>
           <button class="secondary-btn" id="testQwenBtn">测试 Qwen</button>
           <p id="qwenTestResult" class="status-text"></p>
         </section>
@@ -207,6 +240,6 @@
       <button id="saveSettingsBtn" class="primary-btn">保存模型设置</button>
     </dialog>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260507-cache-save"></script>
   </body>
 </html>
