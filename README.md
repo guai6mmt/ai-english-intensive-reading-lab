@@ -1,31 +1,10 @@
 # AI English Intensive Reading Lab
 
-一个用于英文长文章精读的 FastAPI 小应用。支持文章导入、正文清洗、句子/段落分析、词汇学习、阅读答题、听写和写作反馈。
+英文长文章精读工具。支持文章导入、正文清洗、句子/段落分析、词汇学习、阅读答题、听写和写作反馈。
 
-主要技术栈：
+默认端口统一使用 `8010`。
 
-- 后端：FastAPI
-- 前端：原生 HTML/CSS/JavaScript
-- AI 接口：DeepSeek / Qwen，兼容 OpenAI Chat Completions 风格接口
-- 本地数据：`data/` 目录中的 JSON 文件
-
-## 项目结构
-
-```text
-.
-├── app.py
-├── requirements.txt
-├── static/
-│   ├── index.html
-│   ├── app.js
-│   └── styles.css
-├── data/                 # 运行时生成，不提交 GitHub
-└── README.md
-```
-
-`data/` 里会保存 API key、上传文章、分析缓存、生词本和学习进度，已在 `.gitignore` 中排除。
-
-## Mac mini 本地开发
+## 一键在 Mac mini 上运行
 
 首次拉取：
 
@@ -33,69 +12,165 @@
 cd ~/Projects
 git clone https://github.com/guai6mmt/ai-english-intensive-reading-lab.git
 cd ai-english-intensive-reading-lab
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
 ```
 
-设置环境变量：
+可选：复制环境变量文件，填入 API key。
 
 ```bash
-export DEEPSEEK_API_KEY="你的 DeepSeek API Key"
-export DEEPSEEK_BASE_URL="https://api.deepseek.com"
-export DEEPSEEK_MODEL="deepseek-v4-flash"
-
-export QWEN_API_KEY="你的 Qwen / DashScope API Key"
-export QWEN_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
-export QWEN_MODEL="qwen-plus"
+cp .env.example .env
+nano .env
 ```
 
-本地启动：
+一键启动：
 
 ```bash
-python -m uvicorn app:app --reload --host 127.0.0.1 --port 8010
+bash scripts/mac_start.sh
 ```
 
-浏览器打开：
+脚本会自动：
+
+- 创建 `.venv`
+- 安装 Python 依赖
+- 读取 `.env`
+- 创建 `data/`
+- 用 `8010` 端口启动开发服务
+
+打开：
 
 ```text
 http://127.0.0.1:8010
 ```
 
-也可以在页面的“模型设置”中保存 API key、模型和主模型。页面设置会写入 `data/settings.json`，该文件不会上传到 GitHub。
-
-## Ubuntu 服务器部署
-
-以下示例假设部署目录为 `/opt/ai-english-intensive-reading-lab`，服务端口为 `8010`。
-
-### 1. 安装系统依赖
+以后在 Mac mini 上开发，也只需要：
 
 ```bash
-sudo apt update
-sudo apt install -y git python3 python3-venv python3-pip nginx
+cd ~/Projects/ai-english-intensive-reading-lab
+bash scripts/mac_start.sh
 ```
 
-### 2. 拉取项目
+## 一键部署到 Ubuntu 服务器
+
+在 Mac mini 上运行：
 
 ```bash
-sudo mkdir -p /opt/ai-english-intensive-reading-lab
-sudo chown $USER:$USER /opt/ai-english-intensive-reading-lab
+cd ~/Projects/ai-english-intensive-reading-lab
+bash scripts/deploy_to_server.sh 用户名@服务器IP "本次修改说明"
+```
+
+例子：
+
+```bash
+bash scripts/deploy_to_server.sh ubuntu@1.2.3.4 "update deployment scripts"
+```
+
+脚本会自动：
+
+- 检查 `app.py` 和前端脚本
+- 提交当前修改
+- 推送到 GitHub
+- SSH 到服务器
+- 如果服务器没有项目，就自动 clone
+- 如果服务器已有项目，就自动 pull
+- 安装或更新依赖
+- 创建或更新 systemd 服务
+- 使用 `0.0.0.0:8010` 启动服务
+- 重启服务
+
+部署完成后打开：
+
+```text
+http://服务器IP:8010
+```
+
+如果你的服务器部署目录不是默认的 `/opt/ai-english-intensive-reading-lab`，可以这样指定：
+
+```bash
+REMOTE_DIR=/home/ubuntu/ai-english-intensive-reading-lab bash scripts/deploy_to_server.sh ubuntu@1.2.3.4 "deploy"
+```
+
+## 服务器首次手动部署
+
+如果你已经 SSH 到服务器里，也可以直接在服务器上执行：
+
+```bash
 git clone https://github.com/guai6mmt/ai-english-intensive-reading-lab.git /opt/ai-english-intensive-reading-lab
 cd /opt/ai-english-intensive-reading-lab
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
+bash scripts/server_install_or_update.sh
 ```
 
-### 3. 配置环境变量
+脚本会自动创建 systemd 服务，服务名是：
 
-创建环境文件：
+```text
+ai-english-lab
+```
+
+## Mac 修改后的重复部署流程
+
+最简单的循环：
 
 ```bash
-sudo nano /etc/ai-english-lab.env
+# 1. Mac mini 上修改代码
+
+# 2. 本地跑起来看看
+bash scripts/mac_start.sh
+
+# 3. 一键提交、推送、部署到服务器
+bash scripts/deploy_to_server.sh ubuntu@服务器IP "描述这次修改"
 ```
 
-写入：
+如果你想自己手动提交 GitHub，也可以：
+
+```bash
+git status
+git add .
+git commit -m "描述这次修改"
+git push origin main
+```
+
+然后服务器上：
+
+```bash
+cd /opt/ai-english-intensive-reading-lab
+git pull --ff-only origin main
+bash scripts/server_install_or_update.sh
+```
+
+## 常用命令
+
+查看服务器服务状态：
+
+```bash
+sudo systemctl status ai-english-lab
+```
+
+查看服务器日志：
+
+```bash
+journalctl -u ai-english-lab -f
+```
+
+重启服务器服务：
+
+```bash
+sudo systemctl restart ai-english-lab
+```
+
+查看 8010 端口：
+
+```bash
+ss -lntp | grep 8010
+```
+
+## 配置 AI key
+
+Mac 和服务器都可以用 `.env`：
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+内容示例：
 
 ```env
 DEEPSEEK_API_KEY=你的 DeepSeek API Key
@@ -106,216 +181,55 @@ QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 QWEN_MODEL=qwen-plus
 ```
 
-保护权限：
+也可以直接在网页里的“模型设置”里保存。网页设置会写入 `data/settings.json`。
 
-```bash
-sudo chmod 600 /etc/ai-english-lab.env
+## 数据位置
+
+运行数据都在：
+
+```text
+data/
 ```
 
-### 4. 创建 systemd 服务
+包括：
 
-```bash
-sudo nano /etc/systemd/system/ai-english-lab.service
-```
+- 上传文章
+- API 设置
+- AI 分析缓存
+- 生词本
+- 学习进度
 
-写入：
+`data/` 不会提交到 GitHub。
 
-```ini
-[Unit]
-Description=AI English Intensive Reading Lab
-After=network.target
-
-[Service]
-WorkingDirectory=/opt/ai-english-intensive-reading-lab
-EnvironmentFile=/etc/ai-english-lab.env
-ExecStart=/opt/ai-english-intensive-reading-lab/.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8010
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-```
-
-启动服务：
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now ai-english-lab
-sudo systemctl status ai-english-lab
-```
-
-查看日志：
-
-```bash
-journalctl -u ai-english-lab -f
-```
-
-### 5. 配置 Nginx 反向代理
-
-```bash
-sudo nano /etc/nginx/sites-available/ai-english-lab
-```
-
-写入：
-
-```nginx
-server {
-    listen 80;
-    server_name 你的域名或服务器IP;
-
-    client_max_body_size 100m;
-
-    location / {
-        proxy_pass http://127.0.0.1:8010;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-启用配置：
-
-```bash
-sudo ln -s /etc/nginx/sites-available/ai-english-lab /etc/nginx/sites-enabled/ai-english-lab
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-如果使用域名，建议再用 Certbot 配置 HTTPS。
-
-## Mac 修改后部署到服务器
-
-推荐流程是：Mac mini 修改代码，提交到 GitHub，服务器从 GitHub 拉取最新代码并重启服务。
-
-### 1. Mac mini 修改并本地验证
-
-```bash
-cd ~/Projects/ai-english-intensive-reading-lab
-source .venv/bin/activate
-python -m uvicorn app:app --reload --host 127.0.0.1 --port 8010
-```
-
-修改完成后做基础检查：
-
-```bash
-python -B -c "import ast, pathlib; ast.parse(pathlib.Path('app.py').read_text(encoding='utf-8'))"
-node --check static/app.js
-```
-
-如果 Mac 上没有 Node，可以跳过 `node --check`，但修改前端脚本后建议安装 Node 再检查。
-
-### 2. 提交并推送到 GitHub
-
-```bash
-git status
-git add app.py static/index.html static/app.js static/styles.css README.md requirements.txt .gitignore
-git commit -m "描述本次修改"
-git push origin main
-```
-
-不要提交：
-
-- `data/`
-- `.venv/`
-- API key
-- 上传的原文文件
-- 本地缓存文件
-
-### 3. 服务器拉取并重启
-
-SSH 到服务器：
-
-```bash
-ssh 用户名@服务器IP
-```
-
-更新代码：
-
-```bash
-cd /opt/ai-english-intensive-reading-lab
-git pull --ff-only origin main
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-sudo systemctl restart ai-english-lab
-sudo systemctl status ai-english-lab
-```
-
-如果服务异常：
-
-```bash
-journalctl -u ai-english-lab -n 100 --no-pager
-```
-
-## 常用维护命令
-
-本地查看状态：
-
-```bash
-git status
-git log --oneline -5
-```
-
-服务器重启服务：
-
-```bash
-sudo systemctl restart ai-english-lab
-```
-
-服务器查看实时日志：
-
-```bash
-journalctl -u ai-english-lab -f
-```
-
-服务器查看端口：
-
-```bash
-ss -lntp | grep 8010
-```
-
-## 数据备份
-
-学习数据在服务器项目目录的 `data/` 中。升级代码前通常不需要动它。
-
-备份：
+备份服务器数据：
 
 ```bash
 cd /opt/ai-english-intensive-reading-lab
 tar -czf ~/ai-english-lab-data-$(date +%F).tar.gz data
 ```
 
-恢复：
-
-```bash
-cd /opt/ai-english-intensive-reading-lab
-tar -xzf ~/ai-english-lab-data-YYYY-MM-DD.tar.gz
-sudo systemctl restart ai-english-lab
-```
-
-## AI 配置说明
-
-默认接口：
+## 项目结构
 
 ```text
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+.
+├── app.py
+├── requirements.txt
+├── scripts/
+│   ├── mac_start.sh
+│   ├── deploy_to_server.sh
+│   └── server_install_or_update.sh
+├── static/
+│   ├── index.html
+│   ├── app.js
+│   └── styles.css
+├── data/
+└── README.md
 ```
-
-推荐模型：
-
-```text
-DEEPSEEK_MODEL=deepseek-v4-flash
-QWEN_MODEL=qwen-plus
-```
-
-应用页面中可以选择主模型。保存后，文章分析、句子分析、阅读反馈和写作反馈都会优先使用主模型。每次 AI 输出顶部会显示实际使用的 provider/model，方便确认当前结果来自哪个模型。
 
 ## 注意事项
 
-- 生产部署不要使用 `--reload`。
-- 服务器 API key 建议放在 `/etc/ai-english-lab.env`，不要写进 Git。
-- `data/` 是个人学习数据，不提交 GitHub。
-- EPUB/DOCX 解析效果通常优于 PDF。
-- 本工具建议用于个人学习，不要公开分发受版权保护的原文内容。
+- 端口固定用 `8010`。
+- 不再使用 `8000`，避免和已有服务冲突。
+- `data/`、`.env`、`.venv/` 都不会上传 GitHub。
+- Ubuntu 服务器需要能从 Mac mini SSH 登录。
+- 服务器安全组或防火墙需要放行 TCP `8010`。
