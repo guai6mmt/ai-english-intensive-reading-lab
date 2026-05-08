@@ -1,240 +1,291 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AI English Intensive Reading Lab</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
-    <div class="app-shell" id="appShell">
-      <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
-      <aside class="sidebar">
-        <div class="brand">
-          <div class="brand-mark">AI</div>
+    <div class="app" id="appShell" data-sidebar="shown" data-rail="shown">
+      <!-- ───────── Sidebar ───────── -->
+      <aside class="side" id="sidebar">
+        <div class="side-head">
+          <div class="brand-mark">EL</div>
           <div>
-            <h1>English Lab</h1>
-            <p>AI 精读与输出训练系统</p>
+            <div class="brand-name">English Lab</div>
+            <div class="brand-sub">精读 · 听写 · 输出训练</div>
+          </div>
+          <div class="side-head-actions">
+            <input id="fileInput" type="file" accept=".epub,.docx,.txt" hidden />
+            <button class="icon-btn" id="uploadBtn" title="导入文章 EPUB / DOCX / TXT" aria-label="导入文章">↑</button>
+            <button class="icon-btn" id="collapseSideBtn" title="隐藏文章库" aria-label="隐藏文章库">◂</button>
           </div>
         </div>
-        <div class="layout-actions">
-          <button id="toggleSidebarBtn" class="secondary-btn">隐藏侧栏</button>
+
+        <div class="side-search">
+          <span class="search-ic">⌕</span>
+          <input id="searchInput" placeholder="搜索标题、栏目、关键词…" />
         </div>
 
-        <details class="compact-panel">
-          <summary>文件管理与学习数据</summary>
-          <label class="file-drop" for="fileInput">
-            <input id="fileInput" type="file" accept=".epub,.docx,.txt" />
-            <span>上传 EPUB / DOCX / TXT</span>
-          </label>
-          <button id="uploadBtn" class="primary-btn">导入文件</button>
-          <button id="rebuildLibraryBtn" class="secondary-btn full-width">重建文章库</button>
-          <button id="openSettingsBtn" class="secondary-btn full-width">模型设置</button>
-          <p id="uploadStatus" class="status-text"></p>
-          <div id="globalStats" class="mini-stats"></div>
-          <div id="aiStatus" class="ai-status"></div>
-        </details>
-
-        <div class="sidebar-section">
-          <div class="section-title">文章筛选</div>
-          <input id="searchInput" class="search" placeholder="搜索标题、栏目、关键词" />
-          <select id="topicFilter">
-            <option value="">全部题材</option>
-          </select>
-          <select id="languageFilter">
-            <option value="">全部语言特点</option>
-          </select>
-          <select id="difficultyFilter">
-            <option value="">全部难度</option>
-            <option>B1</option>
-            <option>B2</option>
-            <option>C1</option>
-            <option>C2</option>
-          </select>
+        <div class="side-tabs" role="tablist">
+          <button data-list="all" aria-selected="true">全部 · <span id="countAll">0</span></button>
+          <button data-list="recent" aria-selected="false">最近</button>
+          <button data-list="favorite" aria-selected="false">收藏</button>
         </div>
 
-        <nav class="side-nav">
-          <button class="nav-btn active" data-list="all">文章库</button>
-          <button class="nav-btn" data-list="recent">最近学习</button>
-          <button class="nav-btn" data-list="favorite">收藏文章</button>
-          <button class="nav-btn" data-view="vocabView">生词本</button>
-          <button class="nav-btn" data-view="outputsView">产出中心</button>
-        </nav>
+        <div class="side-filters" id="diffChips">
+          <button class="chip" data-diff="" aria-pressed="true">全部难度</button>
+          <button class="chip" data-diff="B2" aria-pressed="false">B1–B2</button>
+          <button class="chip" data-diff="C1" aria-pressed="false">C1–C2</button>
+        </div>
 
-        <div id="sourceList" class="source-list"></div>
-        <div id="articleList" class="article-list"></div>
+        <div class="side-actions">
+          <button class="btn" id="rebuildLibraryBtn" title="使用最新解析规则重建文章库">重建</button>
+          <button class="btn" id="openSettingsBtn" title="模型设置 / 主题">设置</button>
+        </div>
+
+        <div id="articleList" class="side-list"></div>
+
+        <div class="side-foot">
+          <span class="dot-online"></span>
+          <span class="foot-meta" id="aiFootMeta">DeepSeek · 加载中…</span>
+        </div>
       </aside>
 
-      <main class="main">
-        <section id="libraryView" class="view active">
-          <div class="empty-state">
-            <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="打开文章库">☰</button>
-            <h2>选择一篇文章开始精读</h2>
-            <p>左侧文章库会根据难度、题材和语言特点打标签。学习主线是：文本检查 → 长难句 → 词汇 → 阅读答题 → 听写 → 写作反馈。</p>
+      <!-- ───────── Reopen tabs ───────── -->
+      <button class="reopen left hidden" id="reopenSideBtn" title="展开文章库">▸ 文章库</button>
+      <button class="reopen right hidden" id="reopenRailBtn" title="展开 AI 面板">◂ AI 面板</button>
+
+      <!-- ───────── Main ───────── -->
+      <main class="main" id="main">
+        <!-- Toolbar -->
+        <div class="tool" id="toolbar">
+          <button class="btn ghost" id="toggleSideBtn" title="切换文章库" aria-label="切换文章库">☰</button>
+          <div class="crumbs" id="crumbs">
+            <span class="crumb-link" data-go="library">文章库</span>
           </div>
+          <button class="btn ghost" id="kbdHelpBtn" title="键盘快捷键"><span class="kbd">?</span></button>
+          <button class="btn" id="favoriteBtn" title="收藏文章" hidden>★ 收藏</button>
+          <button class="btn" id="batchAnalyzeBtn" title="一键执行所有 AI 分析" hidden>⚡ 一键分析</button>
+          <button class="btn" id="toggleRailBtn" title="隐藏 / 显示 AI 教师面板" hidden>▭ 隐藏 AI</button>
+        </div>
+
+        <!-- ───────── Library view ───────── -->
+        <section class="lib" id="libraryView">
+          <div class="lib-h">
+            <div>
+              <div class="eyebrow">Library</div>
+              <h1>文章库</h1>
+              <p class="muted" id="libSubline" style="margin: 2px 0 0; font-size: 13px;"></p>
+            </div>
+            <div class="lib-stats" id="libStats"></div>
+          </div>
+
+          <div class="lib-controls">
+            <button class="btn" data-view-mode="grid" aria-pressed="true">▦ 卡片</button>
+            <button class="btn" data-view-mode="list">☰ 列表</button>
+            <span class="grow"></span>
+            <span class="muted" id="uploadStatus" style="font-size: 12px;"></span>
+            <button class="btn" id="libUploadBtn">↑ 导入 EPUB / DOCX / TXT</button>
+          </div>
+
+          <div class="lib-grid" id="libGrid"></div>
         </section>
 
-        <section id="studyView" class="view">
-          <header class="study-header">
-            <button class="mobile-menu-btn" id="mobileMenuBtn2" aria-label="打开文章库">☰</button>
-            <button id="backToLibrary" class="ghost-btn">返回文章库</button>
-            <div class="title-block">
-              <p id="articleSection" class="eyebrow"></p>
-              <h2 id="articleTitle"></h2>
-              <p id="articleSubtitle" class="subtitle"></p>
-              <div id="articleTags" class="tag-row"></div>
-            </div>
-            <div class="header-actions">
-              <button id="favoriteBtn" class="secondary-btn">收藏</button>
-              <button id="articleInfoBtn" class="secondary-btn">文章信息</button>
-              <button id="batchAnalyzeBtn" class="secondary-btn">一键全部分析</button>
-              <button id="toggleTeacherBtn" class="secondary-btn">隐藏AI面板</button>
-            </div>
+        <!-- ───────── Study view ───────── -->
+        <section id="studyView" class="hidden">
+          <header class="head" id="articleHead">
+            <h2 class="h-title" id="articleTitle"></h2>
+            <div class="h-tags" id="articleTags"></div>
+            <span class="grow"></span>
+            <button class="btn ghost" id="prevArticleBtn" title="上一篇" aria-label="上一篇">◀</button>
+            <button class="btn ghost" id="nextArticleBtn" title="下一篇" aria-label="下一篇">▶</button>
           </header>
 
-          <div class="tabs" role="tablist">
-            <button class="tab active" data-tab="textTab">文本检查</button>
-            <button class="tab" data-tab="sentenceTab">句子与长难句</button>
-            <button class="tab" data-tab="vocabTab">词汇掌握</button>
-            <button class="tab" data-tab="readingTab">阅读答题</button>
-            <button class="tab" data-tab="dictationTab">听写跟读</button>
-            <button class="tab" data-tab="writingTab">写作输出</button>
-          </div>
+          <nav class="rail" id="stepRail" aria-label="学习流程"></nav>
 
-          <div class="study-grid">
-            <article id="articleText" class="reader"></article>
-            <aside id="teacherPanel" class="teacher-panel">
-              <h3>AI 教师面板</h3>
-              <p class="muted">点击正文句子、提交答案或完成练习后，这里会显示分析和反馈。</p>
-              <div id="teacherContent"></div>
-              <div class="notes-section">
-                <div class="notes-header">
-                  <span>学习笔记</span>
-                  <span id="notesStatus" class="notes-status"></span>
-                </div>
-                <textarea id="articleNotes" placeholder="在这里记录学习心得、难点或想法，1.5 秒后自动保存…"></textarea>
+          <div class="work" id="workspace">
+            <div class="work-main" id="workMain"></div>
+            <aside class="work-side" id="workSide">
+              <div class="rail-head">
+                <h3>AI 教师面板</h3>
+                <span class="rail-pill" id="aiRailPill">deepseek</span>
+                <span class="spacer"></span>
+                <button class="icon-btn" id="closeRailBtn" title="折叠 AI 面板" aria-label="折叠 AI 面板">▸</button>
+              </div>
+              <div class="rail-tabs" id="railTabs" role="tablist">
+                <button data-tab="context" aria-selected="true">上下文</button>
+                <button data-tab="long" aria-selected="false">长难句</button>
+                <button data-tab="vocab" aria-selected="false">词汇</button>
+                <button data-tab="reading" aria-selected="false">答题</button>
+                <button data-tab="dict" aria-selected="false">听写</button>
+                <button data-tab="write" aria-selected="false">写作</button>
+              </div>
+              <div class="rail-body" id="railBody"></div>
+              <div class="notes">
+                <textarea id="articleNotes" placeholder="速记笔记（自动保存）…"></textarea>
+                <span class="notes-status" id="notesStatus"></span>
               </div>
             </aside>
           </div>
-
-          <section id="textTab" class="tab-panel active"></section>
-          <section id="sentenceTab" class="tab-panel"></section>
-          <section id="vocabTab" class="tab-panel"></section>
-          <section id="readingTab" class="tab-panel"></section>
-          <section id="dictationTab" class="tab-panel"></section>
-          <section id="writingTab" class="tab-panel"></section>
-        </section>
-
-        <section id="vocabView" class="view">
-          <header class="page-header">
-            <div>
-              <p class="eyebrow">Review system</p>
-              <h2>生词本</h2>
-            </div>
-          </header>
-          <div id="vocabList" class="vocab-list"></div>
-        </section>
-
-        <section id="outputsView" class="view">
-          <header class="page-header">
-            <div>
-              <p class="eyebrow">Production archive</p>
-              <h2>产出中心</h2>
-            </div>
-          </header>
-          <div id="outputsList" class="outputs-list"></div>
         </section>
       </main>
     </div>
 
-    <dialog id="articleInfoDialog">
-      <div class="dialog-header">
-        <h3>文章信息</h3>
-        <button id="closeInfoBtn" class="ghost-btn">关闭</button>
-      </div>
-      <div id="articleInfoContent"></div>
-    </dialog>
-
+    <!-- ───────── Settings dialog (模型 + 阅读偏好) ───────── -->
     <dialog id="settingsDialog">
       <div class="dialog-header">
-        <h3>DeepSeek / Qwen 模型设置</h3>
-        <button id="closeSettingsBtn" class="ghost-btn">关闭</button>
+        <h3>偏好与模型设置</h3>
+        <button class="btn ghost" id="closeSettingsBtn">关闭</button>
       </div>
-      <section class="analysis-card primary-model-card">
-        <h4>任务模型</h4>
-        <label>文本分析
-          <select id="textProviderInput">
-            <option value="deepseek">DeepSeek</option>
-            <option value="qwen">Qwen</option>
-          </select>
-        </label>
-        <label>图片理解
-          <select id="imageProviderInput">
-            <option value="qwen">Qwen</option>
-            <option value="deepseek">DeepSeek</option>
-          </select>
-        </label>
-        <label>AI 朗读
-          <select id="audioProviderInput">
-            <option value="qwen">Qwen</option>
-            <option value="deepseek">DeepSeek</option>
-          </select>
-        </label>
-        <p class="status-text">文本、图片、音频可以分别选择模型；当前 AI 朗读仅 Qwen 有可用 TTS 配置。</p>
-      </section>
-      <div class="settings-grid">
-        <section class="analysis-card">
-          <h4>DeepSeek</h4>
-          <label>API Key <input id="deepseekKeyInput" class="search" placeholder="留空则使用环境变量" /></label>
-          <label>Base URL <input id="deepseekBaseInput" class="search" /></label>
-          <label>Model
-            <select id="deepseekModelInput">
-              <option value="deepseek-v4-flash">deepseek-v4-flash</option>
-              <option value="deepseek-v4-pro">deepseek-v4-pro</option>
-            </select>
-          </label>
-          <button class="secondary-btn" id="testDeepseekBtn">测试 DeepSeek</button>
-          <p id="deepseekTestResult" class="status-text"></p>
+      <div class="dialog-body">
+        <section class="tweaks-block">
+          <h4>阅读体验</h4>
+          <div class="tweaks-row">
+            <label>主题色板</label>
+            <div class="group" id="themeGroup">
+              <button data-theme="">纸本</button>
+              <button data-theme="slate">清冷</button>
+              <button data-theme="dark">夜读</button>
+            </div>
+          </div>
+          <div class="tweaks-row">
+            <label>行距</label>
+            <div class="group" id="densityGroup">
+              <button data-density="tight">紧</button>
+              <button data-density="normal">中</button>
+              <button data-density="loose">松</button>
+            </div>
+          </div>
+          <div class="tweaks-row">
+            <label>正文字号</label>
+            <input type="range" id="readerSizeRange" min="15" max="22" step="1" />
+            <span class="muted" id="readerSizeLabel" style="font-family: var(--mono); font-size: 11px; min-width: 36px;"></span>
+          </div>
         </section>
-        <section class="analysis-card">
-          <h4>Qwen</h4>
-          <label>API Key <input id="qwenKeyInput" class="search" placeholder="留空则使用环境变量" /></label>
-          <label>Base URL <input id="qwenBaseInput" class="search" /></label>
-          <label>Model
-            <select id="qwenModelInput">
-              <option value="qwen-plus">qwen-plus</option>
-              <option value="qwen-turbo">qwen-turbo</option>
-              <option value="qwen-max">qwen-max</option>
+
+        <section class="tweaks-block">
+          <h4>任务模型</h4>
+          <label>文本分析
+            <select id="textProviderInput">
+              <option value="deepseek">DeepSeek</option>
+              <option value="qwen">Qwen</option>
             </select>
           </label>
-          <label>Image Model
-            <select id="qwenImageModelInput">
-              <option value="qwen-vl-plus">qwen-vl-plus</option>
-              <option value="qwen-vl-max">qwen-vl-max</option>
+          <label>图片理解
+            <select id="imageProviderInput">
+              <option value="qwen">Qwen</option>
+              <option value="deepseek">DeepSeek</option>
             </select>
           </label>
-          <label>TTS Base URL <input id="qwenTtsBaseInput" class="search" /></label>
-          <label>TTS Model
-            <select id="qwenTtsModelInput">
-              <option value="qwen3-tts-flash">qwen3-tts-flash</option>
-              <option value="qwen-tts">qwen-tts</option>
+          <label>AI 朗读
+            <select id="audioProviderInput">
+              <option value="qwen">Qwen</option>
+              <option value="deepseek">DeepSeek</option>
             </select>
           </label>
-          <label>TTS Voice <input id="qwenTtsVoiceInput" class="search" /></label>
-          <label>TTS Language
-            <select id="qwenTtsLanguageInput">
-              <option value="English">English</option>
-              <option value="Chinese">Chinese</option>
-              <option value="Auto">Auto</option>
-            </select>
-          </label>
-          <button class="secondary-btn" id="testQwenBtn">测试 Qwen</button>
-          <p id="qwenTestResult" class="status-text"></p>
+          <p class="status-text">文本、图片、音频可分别选择模型；当前 AI 朗读仅 Qwen 提供 TTS。</p>
+        </section>
+
+        <div class="settings-grid">
+          <section>
+            <h4>DeepSeek</h4>
+            <label>API Key
+              <input id="deepseekKeyInput" type="password" placeholder="留空则使用环境变量" />
+            </label>
+            <label>Base URL
+              <input id="deepseekBaseInput" type="text" />
+            </label>
+            <label>Model
+              <select id="deepseekModelInput">
+                <option value="deepseek-v4-flash">deepseek-v4-flash</option>
+                <option value="deepseek-v4-pro">deepseek-v4-pro</option>
+              </select>
+            </label>
+            <button class="btn" id="testDeepseekBtn">测试 DeepSeek</button>
+            <p class="status-text" id="deepseekTestResult"></p>
+          </section>
+          <section>
+            <h4>Qwen</h4>
+            <label>API Key
+              <input id="qwenKeyInput" type="password" placeholder="留空则使用环境变量" />
+            </label>
+            <label>Base URL
+              <input id="qwenBaseInput" type="text" />
+            </label>
+            <label>Model
+              <select id="qwenModelInput">
+                <option value="qwen-plus">qwen-plus</option>
+                <option value="qwen-turbo">qwen-turbo</option>
+                <option value="qwen-max">qwen-max</option>
+              </select>
+            </label>
+            <label>Image Model
+              <select id="qwenImageModelInput">
+                <option value="qwen-vl-plus">qwen-vl-plus</option>
+                <option value="qwen-vl-max">qwen-vl-max</option>
+              </select>
+            </label>
+            <label>TTS Base URL
+              <input id="qwenTtsBaseInput" type="text" />
+            </label>
+            <label>TTS Model
+              <select id="qwenTtsModelInput">
+                <option value="qwen3-tts-flash">qwen3-tts-flash</option>
+                <option value="qwen-tts">qwen-tts</option>
+              </select>
+            </label>
+            <label>TTS Voice
+              <input id="qwenTtsVoiceInput" type="text" />
+            </label>
+            <label>TTS Language
+              <select id="qwenTtsLanguageInput">
+                <option value="English">English</option>
+                <option value="Chinese">Chinese</option>
+                <option value="Auto">Auto</option>
+              </select>
+            </label>
+            <button class="btn" id="testQwenBtn">测试 Qwen</button>
+            <p class="status-text" id="qwenTestResult"></p>
+          </section>
+        </div>
+
+        <section class="tweaks-block" style="margin-top: 14px;">
+          <h4>系统状态</h4>
+          <div id="globalStats" class="mini-stats"></div>
+          <div id="aiStatus" class="ai-status"></div>
         </section>
       </div>
-      <button id="saveSettingsBtn" class="primary-btn">保存模型设置</button>
+      <div class="dialog-footer">
+        <button class="btn" id="saveSettingsBtn">仅保存偏好</button>
+        <button class="btn primary" id="saveAllSettingsBtn">保存全部</button>
+      </div>
     </dialog>
 
-    <script src="/static/app.js?v=20260507-cache-save"></script>
+    <!-- ───────── Keyboard help dialog ───────── -->
+    <dialog id="kbdDialog">
+      <div class="dialog-header">
+        <h3>键盘快捷键</h3>
+        <button class="btn ghost" id="closeKbdBtn">关闭</button>
+      </div>
+      <div class="dialog-body">
+        <div class="kbd-grid" style="display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; font-size: 13px;">
+          <span class="kbd">[</span><span>上一步</span>
+          <span class="kbd">]</span><span>下一步</span>
+          <span class="kbd">\</span><span>切换 AI 面板</span>
+          <span class="kbd">D</span><span>分析当前句子</span>
+          <span class="kbd">⌘ / Ctrl + ↵</span><span>提交听写 / 写作</span>
+        </div>
+      </div>
+    </dialog>
+
+    <script src="/static/app.js?v=20260508-redesign"></script>
   </body>
 </html>
