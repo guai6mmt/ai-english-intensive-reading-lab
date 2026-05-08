@@ -195,14 +195,23 @@ REMOTE_DIR=/home/ubuntu/ai-english-intensive-reading-lab \
 
 ### 方案 A：脚本一键平滑更新（推荐，~1s 中断）
 
-在服务器上：
+> ⚠️ **第一次使用时**：因为 `server_safe_update.sh` 是后加进仓库的新脚本，老的部署目录里**没有**这个文件。
+> 必须先手动拉一次代码，把脚本本身拉下来：
+>
+> ```bash
+> cd /opt/ai-english-intensive-reading-lab
+> git pull --ff-only origin main          # 第一次必须先 pull，否则下一行报 No such file or directory
+> bash scripts/server_safe_update.sh
+> ```
+>
+> **以后每次更新**只要一行就行，因为脚本内部会自己 pull：
+>
+> ```bash
+> cd /opt/ai-english-intensive-reading-lab
+> bash scripts/server_safe_update.sh
+> ```
 
-```bash
-cd /opt/ai-english-intensive-reading-lab
-bash scripts/server_safe_update.sh
-```
-
-或者从开发机一键远程触发：
+或者从开发机一键远程触发（开发机上必须先 pull 过新脚本，或者直接通过 deploy_safe.sh 推送）：
 
 ```bash
 # 本地（Mac 或 Windows + Git Bash）
@@ -325,6 +334,26 @@ bash scripts/server_install_or_update.sh
 ```
 
 它会：装系统包（`python3 python3-venv python3-pip`）→ 建 `.venv` → 装 pip 依赖 → 写 systemd 服务文件 `ai-english-lab.service` → `enable + start` → 放行 ufw `8010` 端口。
+
+### 4.2 已有旧部署，但 `server_safe_update.sh` 还不存在？
+
+这是把"老部署目录"升级到能用新脚本的过渡步骤，**只需要做一次**：
+
+```bash
+cd /opt/ai-english-intensive-reading-lab
+
+# 1. 看一下当前 HEAD（确认是旧版本）
+git log -1 --oneline
+
+# 2. 拉到包含新脚本的版本
+git pull --ff-only origin main
+
+# 3. 现在脚本已经在本地了，正常调用即可
+bash scripts/server_safe_update.sh
+```
+
+> 报错示例：`bash: scripts/server_safe_update.sh: No such file or directory`
+> → 99% 的原因是没做第 2 步 `git pull`。脚本是新加的，老部署目录里没有。
 
 ---
 
