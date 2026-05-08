@@ -461,8 +461,9 @@ function renderCrumbs() {
 
 // ───────── Step rail ─────────
 function renderStepRail() {
-  const a = state.currentArticle;
   const railEl = $("stepRail");
+  if (!railEl) return;
+  const a = state.currentArticle;
   const progressMap = {
     text: a?.text_check ? 1 : 0.1,
     long: state.longSentences.length ? 1 : 0,
@@ -533,14 +534,8 @@ function setStep(id) {
 
 // ───────── Workspace renderers ─────────
 function renderWorkMain() {
-  const main = $("workMain");
-  const id = state.step;
-  if (id === "text") return renderReader(main);
-  if (id === "long") return renderReader(main);
-  if (id === "vocab") return renderVocabBoard(main);
-  if (id === "reading") return renderReadingBoard(main);
-  if (id === "dict") return renderDictBoard(main);
-  if (id === "write") return renderWriteBoard(main);
+  // Article text is always in the centre; tasks live in the right panel
+  renderReader($("workMain"));
 }
 
 // Reader
@@ -584,6 +579,7 @@ function renderReader(container) {
         </div>
         <button class="btn ghost" id="readAllBtn" title="朗读全文">♪ 朗读全文</button>
         ${state.step === "text" ? `<button class="btn" id="runTextCheckBtn">↻ AI 文本检查</button>` : ""}
+        ${state.step === "text" && article.text_check ? `<button class="btn" id="exportAudioBtn" title="将文章导出为音频文件（含提示音+标题）">⬇ 生成音频</button>` : ""}
         ${state.step === "long" ? `<button class="btn" id="runLongSentenceBtn">⊕ 生成长难句</button>` : ""}
         <span class="spacer"></span>
         <span class="read-progress">P ${currentP} / ${totalP} · ${percent}%</span>
@@ -986,16 +982,32 @@ function renderWritingResult(feedback, meta) {
 // ───────── AI rail ─────────
 function renderRail() {
   const tabs = $("railTabs");
-  tabs.querySelectorAll("button").forEach((b) =>
-    b.setAttribute("aria-selected", String(b.dataset.tab === state.railTab))
-  );
+  const a = state.currentArticle;
+  const rp = computeReadingProgress();
+  const dp = computeDictationProgress();
+  const progressMap = {
+    context: a?.text_check ? "done" : "",
+    long: state.longSentences.length ? "done" : "",
+    vocab: asArray(a?.vocabulary_analysis).length ? "done" : "",
+    reading: rp >= 1 ? "done" : rp > 0 ? "partial" : "",
+    dict: dp >= 1 ? "done" : dp > 0 ? "partial" : "",
+    write: a?.last_writing_feedback ? "done" : state.writing.draft ? "partial" : "",
+  };
+  tabs.querySelectorAll("button").forEach((b) => {
+    b.setAttribute("aria-selected", String(b.dataset.tab === state.railTab));
+    b.dataset.progress = progressMap[b.dataset.tab] || "";
+  });
   const body = $("railBody");
-  if (state.railTab === "context") return body.innerHTML = renderRailContext();
-  if (state.railTab === "long") return body.innerHTML = renderRailLong();
-  if (state.railTab === "vocab") return body.innerHTML = renderRailVocab();
-  if (state.railTab === "reading") return body.innerHTML = renderRailReading();
-  if (state.railTab === "dict") return body.innerHTML = renderRailDict();
-  if (state.railTab === "write") return body.innerHTML = renderRailWrite();
+  if (state.railTab === "context") { body.innerHTML = renderRailContext(); return; }
+  if (state.railTab === "long") { body.innerHTML = renderRailLong(); return; }
+  if (state.railTab === "vocab") { body.innerHTML = renderRailVocab(); return; }
+  if (state.railTab === "reading") { body.innerHTML = renderRailReading(); return; }
+  if (state.railTab === "dict") { body.innerHTML = renderRailDict(); return; }
+  if (state.railTab === "write") {
+    body.innerHTML = renderRailWrite();
+    const task = state.writing.task || state.currentArticle?.last_writing_feedback?.task || "Write an 80-word neutral summary.";
+    setSelectValue($("writingTask"), task);
+  }
 }
 
 function renderRailContext() {
@@ -1089,75 +1101,185 @@ function renderRailVocab() {
       </div>
     </div>`;
   }
-  return items.slice(0, 6).map((v) => `<div class="gloss">
-    <div class="w">${escapeHtml(v.term || "")}<small>${escapeHtml(v.layer || "")}</small></div>
-    <div class="d">${escapeHtml(v.translation || "")}<em>${escapeHtml(v.context || "")}</em></div>
-    <div class="b">
-      <button class="mini" data-say="${escapeHtml(v.term || "")}" title="发音">♪</button>
+  const knownTerms = new Set(state.vocabulary.map((v) => (v.term || "").toLowerCase()));
+  return `<div>
+    <div class="row-flex" style="margin-bottom: 10px;">
+      <span class="eyebrow">词汇 · ${items.length} 条</span>
+      <span class="spacer"></span>
+      <button class="btn" id="reRunVocabBtn" style="font-size: 11px;">↻ 重新生成</button>
     </div>
-  </div>`).join("");
+    ${items.map((v, i) => {
+      const inBook = knownTerms.has((v.term || "").toLowerCase());
+      return `<div class="gloss">
+        <div class="w">${escapeHtml(v.term || "")}${v.ipa ? ` <small>${escapeHtml(v.ipa)}</small>` : ""}<small>${escapeHtml(v.layer || "")}</small></div>
+        <div class="d">${escapeHtml(v.translation || "")}${v.context ? `<em> · ${escapeHtml(v.context)}</em>` : ""}</div>
+        <div class="b">
+          <button class="mini" data-say="${escapeHtml(v.term || "")}">♪</button>
+          ${inBook
+            ? `<span class="mini" style="cursor:default;opacity:0.55;">已收录</span>`
+            : `<button class="mini" data-add-vocab="${i}">+ 生词本</button>`}
+          <button class="mini" data-vocab-imitate="${i}">仿写</button>
+        </div>
+      </div>`;
+    }).join("")}
+  </div>`;
 }
 
 function renderRailReading() {
+  const questions = state.readingQuestions;
   const responses = state.currentArticle?.reading_responses || {};
-  const total = state.readingQuestions.length;
   const answered = Object.keys(responses).length;
-  if (!total) {
-    return `<div class="rail-empty">尚未生成阅读理解题。前往步骤 04 开始。</div>`;
-  }
-  return `<div class="ai-card">
-    <div class="ai-card-h"><span class="label">作答进度</span><span class="meta">${answered} / ${total}</span></div>
-    <div class="ai-card-b">
-      <div style="display: flex; gap: 4px;">
-        ${state.readingQuestions.map((q, i) => {
-          const r = responses[q.id];
-          const color = r ? (Number(r.feedback?.score || 0) >= 14 ? "good" : "warn") : "line";
-          return `<span style="flex: 1; height: 6px; border-radius: 3px; background: var(--${color === "line" ? "line" : color});"></span>`;
-        }).join("")}
+  if (!questions.length) {
+    return `<div class="ai-card">
+      <div class="ai-card-h"><span class="label">阅读答题</span></div>
+      <div class="ai-card-b">
+        <p>AI 基于文章生成 5 道英文阅读理解题，要求英文作答，提交后获得评分和分析。</p>
+        <button class="btn primary" id="runReadingQuestionsBtn" style="margin-top: 8px; width: 100%; justify-content: center;">⚡ 生成阅读理解题</button>
       </div>
-      <p style="font-size: 12.5px; margin-top: 10px; color: var(--ink-2);">提交答案后，这里会显示易错选项分析和回到原文的句子定位。</p>
+    </div>`;
+  }
+  const dots = questions.map((q) => {
+    const r = responses[q.id];
+    const c = r ? (Number(r.feedback?.score || 0) >= 14 ? "good" : "warn") : "line";
+    return `<span style="flex:1;height:5px;border-radius:3px;background:var(--${c});"></span>`;
+  }).join("");
+  return `<div>
+    <div class="row-flex" style="margin-bottom: 8px;">
+      <span class="eyebrow">阅读理解 · ${answered}/${questions.length} 已答</span>
+      <span class="spacer"></span>
+      <button class="btn" id="reRunReadingQuestionsBtn" style="font-size: 11px;">↻ 重新生成</button>
     </div>
-  </div>
-  ${Object.values(responses).slice(-2).map((r) => `<div class="ai-card">
-    <div class="ai-card-h"><span class="label">最近批改</span><span class="score">${escapeHtml(r.feedback?.score ?? "—")} <small>/20</small></span></div>
-    <div class="ai-card-b"><p style="font-size: 13.5px; margin: 0;">${escapeHtml((r.feedback?.content || "").slice(0, 120))}</p></div>
-  </div>`).join("")}`;
+    <div style="display:flex;gap:3px;margin-bottom:14px;">${dots}</div>
+    ${questions.map((q, i) => {
+      const saved = responses[q.id] || {};
+      return `<div class="rail-q" id="q-${i}">
+        <div class="rq-head">
+          <span class="qix">Q${i + 1}</span>
+          <span class="qt">${escapeHtml(q.question || "")}</span>
+        </div>
+        <textarea class="rail-textarea" id="readingAnswer-${i}" placeholder="请用英文回答…">${escapeHtml(saved.answer || "")}</textarea>
+        <div class="rq-foot">
+          <button class="btn primary" data-grade-reading="${i}" style="width:100%;justify-content:center;">提交并获取 AI 反馈</button>
+        </div>
+        ${saved.feedback ? `<div class="rail-fb">
+          <div class="rq-score">评分 <strong>${escapeHtml(saved.feedback.score ?? "—")}</strong> / 20</div>
+          ${saved.feedback.content ? `<p><strong>内容</strong> ${escapeHtml(saved.feedback.content)}</p>` : ""}
+          ${saved.feedback.improved_answer ? `<p><strong>优化</strong> <em>${escapeHtml(saved.feedback.improved_answer)}</em></p>` : ""}
+        </div>` : ""}
+      </div>`;
+    }).join("")}
+  </div>`;
 }
 
 function renderRailDict() {
-  const responses = state.currentArticle?.dictation_responses || {};
   const items = state.dictationItems;
-  const last = Object.values(responses).slice(-1)[0];
-  if (!items.length) return `<div class="rail-empty">尚未生成听写材料。前往步骤 05 开始。</div>`;
-  if (!last) return `<div class="rail-empty">提交一段听写后会显示纠错与跟读建议。</div>`;
-  const item = items.find((i) => i.id === last.item_id) || items[0];
-  const fb = last.feedback || {};
-  const spans = buildDiffSpans(fb.original || item.source, fb.user_answer, fb.missing_words, fb.spelling_or_extra);
-  const notes = deriveDictNotes(fb);
-  return `<div class="ai-card">
-    <div class="ai-card-h"><span class="label">D · 听写纠错</span><span class="score">${escapeHtml(fb.score ?? "—")} <small>/100</small></span></div>
-    <div class="ai-card-b">
-      <div class="diff">${spans.map((s) => `<span class="${s.kind}">${escapeHtml(s.t)}</span>`).join("")}</div>
-      ${notes.length ? `<ul class="tagged-list">${notes.slice(0, 4).map((n) => `<li><span class="tg">${escapeHtml(n.tag)}</span><span class="body">${escapeHtml(n.text)}</span></li>`).join("")}</ul>` : ""}
+  const responses = state.currentArticle?.dictation_responses || {};
+  if (!items.length) {
+    return `<div class="ai-card">
+      <div class="ai-card-h"><span class="label">听写跟读</span></div>
+      <div class="ai-card-b">
+        <p>系统从正文筛选 8–28 词的训练句。建议四轮：整体 → 逐句 → 纠错 → 跟读。</p>
+        <button class="btn primary" id="prepareDictationBtn" style="margin-top: 8px; width: 100%; justify-content: center;">⚡ 生成听写跟读材料</button>
+      </div>
+    </div>`;
+  }
+  return `<div>
+    <div class="row-flex" style="margin-bottom: 10px;">
+      <span class="eyebrow">听写 · ${items.length} 段 · 整体→逐句→纠错→跟读</span>
+      <span class="spacer"></span>
+      <button class="btn" id="prepareDictationBtn" style="font-size: 11px;">↻ 换一组</button>
     </div>
+    ${items.map((d, i) => {
+      const saved = responses[d.id] || {};
+      const round = state.dictation.rounds[d.id] || (saved.feedback ? 3 : 0);
+      const speed = state.dictation.speeds[d.id] || 1;
+      const dur = state.dictation.durations[d.id] || estimateDuration(d.source);
+      const played = state.dictation.plays[d.id] ? 24 : 0;
+      return `<div class="dict-shell" data-dict-id="${escapeHtml(d.id)}">
+        <div class="dict-h">
+          <span class="nm">D${i + 1}</span>
+          <span class="ix">${escapeHtml(d.focus || "提交前隐藏原文。")}</span>
+          <div class="dict-rounds">
+            <button class="round-pill" data-round="0" aria-pressed="${round === 0}">整体</button>
+            <button class="round-pill" data-round="1" aria-pressed="${round === 1}">逐句</button>
+            <button class="round-pill" data-round="2" aria-pressed="${round === 2}">纠错</button>
+            <button class="round-pill" data-round="3" aria-pressed="${round === 3}">跟读</button>
+          </div>
+        </div>
+        <div class="player">
+          <button class="play-btn" data-play-dict title="播放">▶</button>
+          <div class="wave">${renderWaveBars(32, played, i)}</div>
+          <span class="player-meta">0:${String(played > 0 ? Math.floor(dur / 2) : 0).padStart(2, "0")} / 0:${String(Math.min(99, dur)).padStart(2, "0")}</span>
+          <div class="player-speed">
+            <button data-speed="0.7" aria-pressed="${speed === 0.7}">0.7×</button>
+            <button data-speed="0.85" aria-pressed="${speed === 0.85}">0.85×</button>
+            <button data-speed="1" aria-pressed="${speed === 1}">1×</button>
+            <button data-speed="1.15" aria-pressed="${speed === 1.15}">1.15×</button>
+          </div>
+        </div>
+        <div class="dict-input">
+          <textarea class="rail-textarea" id="dictationAnswer-${i}" placeholder="先听 1–2 遍，把听到的句子完整写下来。Ctrl+↵ 提交。">${escapeHtml(saved.answer || "")}</textarea>
+          <div style="display:flex;gap:6px;margin-top:6px;">
+            <button class="btn" data-toggle-source="${i}">👁 原文</button>
+            <button class="btn primary" data-dictation-feedback="${i}" style="flex:1;justify-content:center;">${saved.feedback ? "重新提交" : "提交听写"}</button>
+          </div>
+          <div class="diff-line hidden" data-source-line="${i}" style="margin-top: 8px;">${escapeHtml(d.source || "")}</div>
+        </div>
+        ${saved.feedback ? renderDictFeedback(saved.feedback, saved.meta, d) : ""}
+      </div>`;
+    }).join("")}
   </div>`;
 }
 
 function renderRailWrite() {
-  const fb = state.currentArticle?.last_writing_feedback?.feedback;
-  if (!fb) return `<div class="rail-empty">尚未提交写作。前往步骤 06 开始。</div>`;
-  const overall = Number(fb.score ?? 0);
-  const overallTen = (overall > 10 ? overall / 2 : overall).toFixed(1);
-  return `<div class="ai-card">
-    <div class="ai-card-h"><span class="label">写作总评</span><span class="score">${overallTen} <small>/10</small></span></div>
-    <div class="ai-card-b">
-      ${fb.next_step ? `<p style="margin: 0 0 6px;"><strong style="font-size: 11px; font-family: var(--mono); color: var(--muted); text-transform: uppercase;">NEXT STEP</strong><br><span style="font-size: 13px;">${escapeHtml(fb.next_step)}</span></p>` : ""}
+  const article = state.currentArticle;
+  const saved = article?.last_writing_feedback || {};
+  const draft = state.writing.draft || saved.content || "";
+  const task = state.writing.task || saved.task || "Write an 80-word neutral summary.";
+  const wc = countWords(draft);
+  const sc = countSentences(draft);
+  const fb = saved.feedback;
+  return `<div>
+    <div class="ai-card" style="margin-bottom: 10px;">
+      <div class="ai-card-h"><span class="label">写作任务</span></div>
+      <div class="ai-card-b" style="padding-top: 6px;">
+        <select id="writingTask" style="width:100%;">
+          <option>Write an 80-word neutral summary.</option>
+          <option>Write a 150-word response using at least three article expressions.</option>
+          <option>Imitate one paragraph structure from the article.</option>
+        </select>
+      </div>
     </div>
-  </div>
-  ${["content","structure","grammar","vocabulary"].filter((k) => fb[k]).slice(0, 3).map((k) => `<div class="ai-card">
-    <div class="ai-card-h"><span class="label">${k.toUpperCase()}</span></div>
-    <div class="ai-card-b"><p style="font-size: 13px; margin: 0;">${escapeHtml((fb[k] || "").slice(0, 200))}</p></div>
-  </div>`).join("")}`;
+    <div class="ai-card">
+      <div class="ai-card-h">
+        <span class="label">草稿</span>
+        <span class="meta">${draft ? `${wc} words · ${sc} sent` : "未提交"}</span>
+      </div>
+      <div class="ai-card-b" style="padding-top: 6px;">
+        <textarea class="rail-textarea rail-textarea-tall" id="writingDraft" placeholder="在这里写英文摘要、观点短评或仿写段落…">${escapeHtml(draft)}</textarea>
+        <div style="display:flex;justify-content:flex-end;margin-top:8px;">
+          <button class="btn primary" id="runWritingFeedbackBtn">✓ 提交批改  ⌘↵</button>
+        </div>
+      </div>
+    </div>
+    ${fb ? `<div class="ai-card" style="margin-top: 10px;">
+      <div class="ai-card-h">
+        <span class="label">AI 批改</span>
+        <span class="score">${(Number(fb.score ?? 0) > 10 ? Number(fb.score) / 2 : Number(fb.score ?? 0)).toFixed(1)} <small>/10</small></span>
+      </div>
+      <div class="ai-card-b">
+        ${["content","structure","grammar","vocabulary","next_step"].filter((k) => fb[k]).map((k) => `
+          <div style="margin-bottom: 8px;">
+            <strong style="font-size:10.5px;font-family:var(--mono);color:var(--muted);text-transform:uppercase;">${k.replace("_", " ")}</strong>
+            <p style="margin:2px 0;font-size:13px;color:var(--ink-2);">${escapeHtml(fb[k])}</p>
+          </div>`).join("")}
+        ${fb.improved_version ? `<div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--line);">
+          <strong style="font-size:10.5px;font-family:var(--mono);color:var(--muted);">IMPROVED</strong>
+          <p style="font-family:var(--serif);font-size:13px;margin:4px 0;">${escapeHtml(fb.improved_version)}</p>
+        </div>` : ""}
+      </div>
+    </div>` : ""}
+  </div>`;
 }
 
 // ───────── Sentence selection ─────────
@@ -1227,6 +1349,33 @@ async function speak(text) {
   } catch (error) {
     console.warn("AI 朗读失败，已回退浏览器朗读：", error);
     fallbackBrowserSpeak(clean);
+  }
+}
+
+async function exportArticleAudio() {
+  const btn = $("exportAudioBtn");
+  if (!state.currentArticle) return;
+  const original = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.textContent = "生成中…"; }
+  try {
+    const response = await fetch(`/api/articles/${state.currentArticle.id}/export-audio`);
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || `请求失败 (${response.status})`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${state.currentArticle.title || "article"}.wav`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    alert(`音频生成失败：${err.message}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
   }
 }
 
@@ -1384,10 +1533,16 @@ document.addEventListener("click", async (event) => {
     setStep(target.dataset.step);
     return;
   }
-  // Rail tab
+  // Rail tab — also drives the main step so top rail is not needed
   if (target.matches(".rail-tabs button[data-tab]")) {
-    state.railTab = target.dataset.tab;
-    renderRail();
+    const tabToStep = { context: "text", long: "long", vocab: "vocab", reading: "reading", dict: "dict", write: "write" };
+    const stepId = tabToStep[target.dataset.tab];
+    if (stepId) {
+      setStep(stepId);
+    } else {
+      state.railTab = target.dataset.tab;
+      renderRail();
+    }
     return;
   }
   // Sentence click
@@ -1448,6 +1603,7 @@ document.addEventListener("click", async (event) => {
     applyTweaks();
     return;
   }
+  if (target.id === "exportAudioBtn") { await exportArticleAudio(); return; }
   if (target.id === "kbdHelpBtn") { $("kbdDialog").showModal(); return; }
   if (target.id === "closeKbdBtn") { $("kbdDialog").close(); return; }
   if (target.id === "openSettingsBtn") { $("settingsDialog").showModal(); return; }

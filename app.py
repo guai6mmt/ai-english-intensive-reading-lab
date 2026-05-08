@@ -1,16 +1,21 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import base64
 import difflib
 import hashlib
 import html
+import io
 import json
+import math
 import os
 import re
 import requests
 import shutil
+import struct
 import time
 import uuid
+import wave
 import zipfile
 from collections import Counter
 from contextlib import asynccontextmanager
@@ -21,7 +26,7 @@ from typing import Any, Callable
 from bs4 import BeautifulSoup
 from docx import Document
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -1239,6 +1244,56 @@ def synthesize_qwen_speech(text: str, voice: str | None = None, language_type: s
     }
 
 
+def generate_beep_wav(
+    frequency: int = 520,
+    duration: float = 0.45,
+    sample_rate: int = 24000,
+    channels: int = 1,
+    sample_width: int = 2,
+    volume: float = 0.22,
+) -> bytes:
+    """Generate a gentle sine-wave tone as WAV bytes matching the given audio format."""
+    n = int(sample_rate * duration)
+    fade = max(1, int(sample_rate * 0.04))
+    max_val = (1 << (sample_width * 8 - 1)) - 1
+    frames = bytearray()
+    for i in range(n):
+        s = math.sin(2 * math.pi * frequency * i / sample_rate)
+        if i < fade:
+            s *= i / fade
+        elif i > n - fade:
+            s *= (n - i) / fade
+        val = max(-max_val - 1, min(max_val, int(s * volume * max_val)))
+        sample = struct.pack("<h" if sample_width == 2 else "b", val)
+        frames += sample * channels
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(sample_width)
+        w.setframerate(sample_rate)
+        w.writeframes(bytes(frames))
+    return buf.getvalue()
+
+
+def concat_wav(wav1: bytes, wav2: bytes, silence_ms: int = 380) -> bytes:
+    """Concatenate two WAV files with a short silence gap between them."""
+    buf2 = io.BytesIO(wav2)
+    with wave.open(buf2, "rb") as w2:
+        rate, chans, width = w2.getframerate(), w2.getnchannels(), w2.getsampwidth()
+        pcm2 = w2.readframes(w2.getnframes())
+    buf1 = io.BytesIO(wav1)
+    with wave.open(buf1, "rb") as w1:
+        pcm1 = w1.readframes(w1.getnframes())
+    silence = b"\x00" * (int(rate * silence_ms / 1000) * chans * width)
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wo:
+        wo.setnchannels(chans)
+        wo.setsampwidth(width)
+        wo.setframerate(rate)
+        wo.writeframes(pcm1 + silence + pcm2)
+    return out.getvalue()
+
+
 def writing_feedback_fallback(task: str, content: str, article: dict[str, Any]) -> dict[str, Any]:
     article_terms = [item["term"] for item in article["stats"].get("top_terms", [])[:8]]
     used = [t for t in article_terms if re.search(rf"\b{re.escape(t)}\b", content, re.I)]
@@ -1444,6 +1499,50 @@ def audio_speech(request: SpeechRequest) -> dict[str, Any]:
     if provider != "qwen":
         raise HTTPException(400, "当前仅 Qwen 配置了 AI 朗读模型。")
     return synthesize_qwen_speech(request.text, request.voice, request.language_type)
+
+
+@app.get("/api/articles/{article_id}/export-audio")
+def export_article_audio(article_id: str) -> Response:
+    article = find_article(article_id)
+    title = article.get("title", "Article")
+    paragraphs = article.get("cleaned_paragraphs") or article.get("paragraphs") or []
+    if not paragraphs:
+        raise HTTPException(400, "文章暂无可用文本。请先完成文本检查。")
+    settings = load_settings()
+    provider = task_provider("audio", settings=settings)
+    if provider != "qwen":
+        raise HTTPException(400, "音频导出需要 Qwen TTS，请在设置页面配置 Qwen API Key。")
+    joined = " ".join(str(p) for p in paragraphs if p)
+    if len(joined) > 2600:
+        joined = joined[:2600].rsplit(" ", 1)[0] + "…"
+    tts_text = f"{title}. {joined}"
+    tts = synthesize_qwen_speech(tts_text)
+    if tts.get("audio_data"):
+        audio_bytes = base64.b64decode(tts["audio_data"])
+    elif tts.get("audio_url"):
+        r = requests.get(tts["audio_url"], timeout=60)
+        r.raise_for_status()
+        audio_bytes = r.content
+    else:
+        raise HTTPException(502, "TTS 未返回音频。")
+    mime = tts.get("mime_type", "audio/wav")
+    if audio_bytes[:4] == b"RIFF":
+        try:
+            buf_info = io.BytesIO(audio_bytes)
+            with wave.open(buf_info, "rb") as winfo:
+                rate = winfo.getframerate()
+                chans = winfo.getnchannels()
+                width = winfo.getsampwidth()
+            beep = generate_beep_wav(sample_rate=rate, channels=chans, sample_width=width)
+            audio_bytes = concat_wav(beep, audio_bytes)
+        except Exception:
+            pass
+    safe_name = re.sub(r"[^\w一-鿿\-]", "_", title)[:60] or "article"
+    return Response(
+        content=audio_bytes,
+        media_type=mime,
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.wav"'},
+    )
 
 
 @app.get("/api/library")
