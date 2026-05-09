@@ -36,6 +36,8 @@ const state = {
   reading: { picks: {} },
   dictation: { rounds: {}, speeds: {}, plays: {}, durations: {} },
   writing: { task: "", draft: "" },
+  collapsedSources: new Set(),
+  collapsedSections: new Set(),
 };
 
 // ───────── Utilities ─────────
@@ -260,19 +262,30 @@ function renderSidebar() {
     return;
   }
 
-  const groups = new Map();
+  // Build: source → sections → articles
+  const sources = new Map();
   filtered.forEach((article) => {
-    const key = article.sourceId || article.sourceFilename || "unknown";
-    if (!groups.has(key)) {
-      groups.set(key, { sourceId: article.sourceId, filename: article.sourceFilename || "未命名来源", articles: [] });
+    const srcKey = article.sourceId || article.sourceFilename || "unknown";
+    if (!sources.has(srcKey)) {
+      sources.set(srcKey, { sourceId: article.sourceId, filename: article.sourceFilename || "未命名来源", sections: new Map() });
     }
-    groups.get(key).articles.push(article);
+    const src = sources.get(srcKey);
+    const secName = article.section || "Articles";
+    if (!src.sections.has(secName)) src.sections.set(secName, []);
+    src.sections.get(secName).push(article);
   });
 
-  $("articleList").innerHTML = [...groups.values()]
-    .map((group) => {
-      const label = (group.filename || "未知来源").replace(/\.[^.]+$/, "");
-      const rows = group.articles.map((article) => {
+  $("articleList").innerHTML = [...sources.values()].map((src) => {
+    const label = (src.filename || "未知来源").replace(/\.[^.]+$/, "");
+    const srcKey = src.sourceId || src.filename || "unknown";
+    const srcCollapsed = state.collapsedSources.has(srcKey);
+    const totalCount = [...src.sections.values()].reduce((s, a) => s + a.length, 0);
+
+    const sectionsHtml = srcCollapsed ? "" : [...src.sections.entries()].map(([secName, secArticles]) => {
+      const secKey = `${srcKey}:${secName}`;
+      const secCollapsed = state.collapsedSections.has(secKey);
+
+      const rows = secCollapsed ? "" : secArticles.map((article) => {
         const studied = state.progress[article.id];
         const status = studied ? (studied.status === "completed" ? "done" : "in-progress") : "";
         const isActive = state.currentArticle?.id === article.id ? "true" : "false";
@@ -288,16 +301,27 @@ function renderSidebar() {
           ${article.favorite ? `<span class="art-meta" title="已收藏">★</span>` : ""}
         </div>`;
       }).join("");
-      return `<div class="source-group">
-        <div class="source-group-h">
-          <span>${escapeHtml(label)}</span>
-          <span class="group-count">${group.articles.length}</span>
-          ${group.sourceId ? `<button class="del-source-btn" data-delete-source="${escapeHtml(group.sourceId)}" title="删除此来源">✕</button>` : ""}
+
+      return `<div class="section-group">
+        <div class="section-group-h" data-collapse-section="${escapeHtml(secKey)}">
+          <span class="section-chevron">${secCollapsed ? "▸" : "▾"}</span>
+          <span class="section-name">${escapeHtml(secName)}</span>
+          <span class="group-count">${secArticles.length}</span>
         </div>
         ${rows}
       </div>`;
-    })
-    .join("");
+    }).join("");
+
+    return `<div class="source-group">
+      <div class="source-group-h">
+        <button class="collapse-toggle" data-collapse-source="${escapeHtml(srcKey)}" title="${srcCollapsed ? "展开" : "折叠"}">${srcCollapsed ? "▸" : "▾"}</button>
+        <span class="source-label">${escapeHtml(label)}</span>
+        <span class="group-count">${totalCount}</span>
+        ${src.sourceId ? `<button class="del-source-btn" data-delete-source="${escapeHtml(src.sourceId)}" title="删除此来源">✕</button>` : ""}
+      </div>
+      ${sectionsHtml}
+    </div>`;
+  }).join("");
 }
 
 function filteredArticles() {
@@ -579,7 +603,7 @@ function renderReader(container) {
         </div>
         <button class="btn ghost" id="readAllBtn" title="朗读全文">♪ 朗读全文</button>
         ${state.step === "text" ? `<button class="btn" id="runTextCheckBtn">↻ AI 文本检查</button>` : ""}
-        ${state.step === "text" && article.text_check ? `<button class="btn" id="exportAudioBtn" title="将文章导出为音频文件（含提示音+标题）">⬇ 生成音频</button>` : ""}
+        ${state.step === "text" ? `<button class="btn" id="exportAudioBtn" title="将文章导出为音频文件（含提示音+标题）">⬇ 生成音频</button>` : ""}
         ${state.step === "long" ? `<button class="btn" id="runLongSentenceBtn">⊕ 生成长难句</button>` : ""}
         <span class="spacer"></span>
         <span class="read-progress">P ${currentP} / ${totalP} · ${percent}%</span>
@@ -1356,6 +1380,22 @@ async function exportArticleAudio() {
   const btn = $("exportAudioBtn");
   if (!state.currentArticle) return;
   const original = btn ? btn.textContent : "";
+
+  // Auto-run text check first if not yet done
+  if (!state.currentArticle.text_check) {
+    if (btn) { btn.disabled = true; btn.textContent = "文本检查中…"; }
+    try {
+      const data = await api(`/api/articles/${state.currentArticle.id}/text-check`, { method: "POST" });
+      if (data.article) state.currentArticle = data.article;
+      renderWorkMain();
+      renderStepRail();
+    } catch (err) {
+      alert(`文本检查失败：${err.message}`);
+      if (btn) { btn.disabled = false; btn.textContent = original; }
+      return;
+    }
+  }
+
   if (btn) { btn.disabled = true; btn.textContent = "生成中…"; }
   try {
     const response = await fetch(`/api/articles/${state.currentArticle.id}/export-audio`);
@@ -1649,6 +1689,29 @@ document.addEventListener("click", async (event) => {
       await refreshAll();
       alert("文章库已重建。");
     });
+    return;
+  }
+  if (target.matches("[data-collapse-source]")) {
+    const key = target.dataset.collapseSource;
+    if (state.collapsedSources.has(key)) state.collapsedSources.delete(key);
+    else state.collapsedSources.add(key);
+    renderSidebar();
+    return;
+  }
+  if (target.matches("[data-collapse-section]")) {
+    const key = target.dataset.collapseSection;
+    if (state.collapsedSections.has(key)) state.collapsedSections.delete(key);
+    else state.collapsedSections.add(key);
+    renderSidebar();
+    return;
+  }
+  if (target.matches(".section-group-h")) {
+    const key = target.dataset.collapseSection;
+    if (key) {
+      if (state.collapsedSections.has(key)) state.collapsedSections.delete(key);
+      else state.collapsedSections.add(key);
+      renderSidebar();
+    }
     return;
   }
   if (target.matches("[data-delete-source]")) {
@@ -1985,6 +2048,42 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+// ───────── Rail resizer (drag to resize AI panel) ─────────
+function initRailResizer() {
+  const resizer = $("workResizer");
+  const work = $("workspace");
+  if (!resizer || !work) return;
+
+  const saved = localStorage.getItem("railWidth");
+  if (saved) work.style.setProperty("--rail-width", saved + "px");
+
+  let startX = 0, startWidth = 0;
+
+  resizer.addEventListener("mousedown", (e) => {
+    startX = e.clientX;
+    startWidth = $("workSide").offsetWidth;
+    resizer.classList.add("dragging");
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    e.preventDefault();
+  });
+
+  function onMove(e) {
+    const dx = startX - e.clientX;
+    const newWidth = Math.max(300, Math.min(720, startWidth + dx));
+    work.style.setProperty("--rail-width", newWidth + "px");
+  }
+
+  function onUp() {
+    resizer.classList.remove("dragging");
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    const w = parseInt(work.style.getPropertyValue("--rail-width"));
+    if (!isNaN(w)) localStorage.setItem("railWidth", w);
+  }
+}
+
 // Boot
 loadTweaks();
 refreshAll();
+initRailResizer();

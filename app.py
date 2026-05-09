@@ -586,6 +586,23 @@ def extract_epub_articles(path: Path, source_id: str) -> list[dict[str, Any]]:
     articles: list[dict[str, Any]] = []
     with zipfile.ZipFile(path) as book:
         names = book.namelist()
+
+        # Build feed_N → section name map from feed index pages (e.g. feed_0/index_*.html)
+        feed_sections: dict[str, str] = {}
+        for idx_name in names:
+            m = re.match(r"(feed_(\d+))/index[^/]*\.(html|xhtml)$", idx_name, re.IGNORECASE)
+            if not m:
+                continue
+            feed_num = m.group(2)
+            if feed_num in feed_sections:
+                continue
+            raw = book.read(idx_name).decode("utf-8", errors="ignore")
+            soup = BeautifulSoup(raw, "html.parser")
+            headings = [clean_text(h.get_text(" ")) for h in soup.find_all(["h1", "h2", "h3"])]
+            headings = [h for h in headings if h and h.lower() not in {"unknown", "未知"}]
+            if headings:
+                feed_sections[feed_num] = headings[0]
+
         article_names = [n for n in names if n.lower().endswith((".html", ".xhtml")) and "/article_" in n.lower()]
         html_names = article_names
         require_article_path = True
@@ -601,7 +618,12 @@ def extract_epub_articles(path: Path, source_id: str) -> list[dict[str, Any]]:
             headings = [h for h in headings if h and h.lower() not in {"unknown", "未知"}]
             title = headings[0] if headings else ""
             subtitle = headings[1] if len(headings) > 1 else ""
-            section = headings[2] if len(headings) > 2 else infer_section(name)
+            # Prefer feed index section name for accurate grouping
+            feed_m = re.search(r"feed_(\d+)/", name)
+            if feed_m and feed_m.group(1) in feed_sections:
+                section = feed_sections[feed_m.group(1)]
+            else:
+                section = headings[2] if len(headings) > 2 else infer_section(name)
             paragraphs = filter_article_paragraphs([clean_text(p.get_text(" ")) for p in soup.find_all(["p", "li"])])
             if len(" ".join(paragraphs).split()) < 80:
                 paragraphs = infer_paragraphs_from_text(clean_text(soup.get_text(" | ")))
