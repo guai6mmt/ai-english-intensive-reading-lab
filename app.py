@@ -1648,7 +1648,11 @@ def poll_qwen_asr_task(
         try:
             response = requests.get(
                 dashscope_task_url(base_url, task_id),
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "X-DashScope-Async": "enable",
+                    "Content-Type": "application/json",
+                },
                 timeout=30,
             )
             data = response.json()
@@ -1673,10 +1677,13 @@ def poll_qwen_asr_task(
 
 def fetch_qwen_transcription(task_result: dict[str, Any]) -> dict[str, Any]:
     output = task_result.get("output") or {}
+    result = output.get("result") or {}
     results = output.get("results") or []
     transcription_url = ""
+    if isinstance(result, dict):
+        transcription_url = str(result.get("transcription_url") or "")
     if results and isinstance(results[0], dict):
-        transcription_url = str(results[0].get("transcription_url") or "")
+        transcription_url = transcription_url or str(results[0].get("transcription_url") or "")
     transcription_url = transcription_url or str(output.get("transcription_url") or "")
     if not transcription_url:
         raise HTTPException(502, "Qwen ASR 任务完成，但没有返回 transcription_url。")
