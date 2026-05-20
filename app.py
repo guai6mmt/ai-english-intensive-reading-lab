@@ -18,6 +18,7 @@ import uuid
 import wave
 import zipfile
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +40,7 @@ except Exception:  # pragma: no cover - fallback keeps local mode usable.
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
+AUDIO_CACHE_DIR = DATA_DIR / "audio_cache"
 STATIC_DIR = ROOT / "static"
 LIBRARY_PATH = DATA_DIR / "library.json"
 VOCAB_PATH = DATA_DIR / "vocabulary.json"
@@ -213,6 +215,7 @@ class NotesRequest(BaseModel):
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(exist_ok=True)
     UPLOAD_DIR.mkdir(exist_ok=True)
+    AUDIO_CACHE_DIR.mkdir(exist_ok=True)
     STATIC_DIR.mkdir(exist_ok=True)
 
 
@@ -1523,6 +1526,57 @@ def audio_speech(request: SpeechRequest) -> dict[str, Any]:
     return synthesize_qwen_speech(request.text, request.voice, request.language_type)
 
 
+def sentence_audio_cache_key(text: str, voice: str, model: str, language_type: str) -> str:
+    payload = f"{model}|{voice}|{language_type}|{clean_text(text)}"
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+@app.post("/api/audio/sentence")
+def audio_sentence(request: SpeechRequest) -> dict[str, Any]:
+    clean = clean_text(request.text or "")
+    if not clean:
+        raise HTTPException(400, "朗读文本不能为空。")
+    settings = load_settings()
+    provider = task_provider("audio", settings=settings)
+    if provider != "qwen":
+        raise HTTPException(400, "当前仅 Qwen 配置了 AI 朗读模型。")
+    config = qwen_tts_config()
+    voice = (request.voice or config["voice"]).strip() or "Ethan"
+    language_type = (request.language_type or config["language_type"]).strip() or "English"
+    model = config["model"]
+    key = sentence_audio_cache_key(clean, voice, model, language_type)
+    cache_path = AUDIO_CACHE_DIR / f"{key}.wav"
+    audio_url = f"/audio/{key}.wav"
+    if cache_path.exists() and cache_path.stat().st_size > 0:
+        return {
+            "audio_url": audio_url,
+            "cached": True,
+            "mime_type": "audio/wav",
+            "key": key,
+        }
+    tts = synthesize_qwen_speech(clean, voice, language_type)
+    if tts.get("audio_data"):
+        audio_bytes = base64.b64decode(tts["audio_data"])
+    elif tts.get("audio_url"):
+        try:
+            r = requests.get(tts["audio_url"], timeout=60)
+            r.raise_for_status()
+        except requests.RequestException as exc:
+            raise HTTPException(502, f"下载 Qwen 朗读音频失败：{exc}") from exc
+        audio_bytes = r.content
+    else:
+        raise HTTPException(502, "Qwen 未返回音频。")
+    AUDIO_CACHE_DIR.mkdir(exist_ok=True)
+    cache_path.write_bytes(audio_bytes)
+    return {
+        "audio_url": audio_url,
+        "cached": False,
+        "mime_type": tts.get("mime_type", "audio/wav"),
+        "key": key,
+        "meta": tts.get("meta"),
+    }
+
+
 @app.get("/api/articles/{article_id}/export-audio")
 def export_article_audio(article_id: str) -> Response:
     article = find_article(article_id)
@@ -1817,6 +1871,85 @@ def sentence_analysis(article_id: str, request: SentenceRequest) -> dict[str, An
     return {"analysis": result, "meta": meta, "article": updated}
 
 
+def _analyze_sentence_for_listening(article: dict[str, Any], sentence: str) -> dict[str, Any]:
+    fallback = analyze_sentence_fallback(sentence, article)
+    prompt = (
+        "请分析这个英文句子，返回JSON字段：sentence, difficult_vocabulary, sentence_structure, "
+        "translation, transferable_expressions, imitation_task。输出顺序必须服务于学习："
+        "1) 先提取较难词汇，difficult_vocabulary数组每项含term, meaning, note；"
+        "2) 再分析句式结构，sentence_structure对象含main_clause, modifiers数组, logic, reading_order数组；"
+        "3) 最后给自然中文翻译translation。\n\n"
+        f"文章标题：{article['title']}\n句子：{sentence}"
+    )
+    result, _meta = call_ai_json("deepseek", SYSTEM_TEACHER, prompt, fallback)
+    return result
+
+
+@app.post("/api/articles/{article_id}/listening/prepare")
+def listening_prepare(article_id: str) -> dict[str, Any]:
+    article = find_article(article_id)
+    paragraphs = article.get("cleaned_paragraphs") or article.get("paragraphs") or []
+    if not paragraphs:
+        raise HTTPException(400, "文章暂无可用文本，请先完成文本检查。")
+    items: list[dict[str, Any]] = []
+    for para_idx, paragraph in enumerate(paragraphs):
+        for sentence in split_sentences(paragraph):
+            items.append({"para": para_idx, "text": sentence})
+    if not items:
+        raise HTTPException(400, "无法切分出句子。")
+
+    analyses_cache = dict(article.get("sentence_analyses") or {})
+    pending: list[tuple[int, str, str]] = []
+    for i, item in enumerate(items):
+        key = stable_id(article_id, item["text"])
+        if key not in analyses_cache:
+            pending.append((i, key, item["text"]))
+
+    if pending:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {
+                pool.submit(_analyze_sentence_for_listening, article, text): (idx, key)
+                for idx, key, text in pending
+            }
+            for future in as_completed(futures):
+                idx, key = futures[future]
+                try:
+                    analyses_cache[key] = future.result()
+                except Exception:
+                    analyses_cache[key] = analyze_sentence_fallback(items[idx]["text"], article)
+        save_article_fields(article_id, {"sentence_analyses": analyses_cache})
+
+    sentences_out: list[dict[str, Any]] = []
+    for i, item in enumerate(items):
+        key = stable_id(article_id, item["text"])
+        analysis = analyses_cache.get(key) or {}
+        vocab_items = analysis.get("difficult_vocabulary") or []
+        vocab = []
+        for v in vocab_items:
+            if not isinstance(v, dict):
+                continue
+            term = clean_text(str(v.get("term") or ""))
+            if not term:
+                continue
+            vocab.append({
+                "term": term,
+                "meaning": clean_text(str(v.get("meaning") or "")),
+                "note": clean_text(str(v.get("note") or "")),
+            })
+        sentences_out.append({
+            "index": i,
+            "para": item["para"],
+            "text": item["text"],
+            "translation": clean_text(str(analysis.get("translation") or "")),
+            "vocab": vocab,
+        })
+    return {
+        "article_id": article_id,
+        "title": article.get("title", ""),
+        "sentences": sentences_out,
+    }
+
+
 @app.post("/api/articles/{article_id}/vocabulary/analyze")
 def vocabulary_analysis(article_id: str, refresh: bool = False) -> dict[str, Any]:
     article = find_article(article_id)
@@ -2060,4 +2193,6 @@ def delete_source(source_id: str) -> dict[str, Any]:
     return {"library": lib, "summary": library_summary(lib)}
 
 
+AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/audio", StaticFiles(directory=AUDIO_CACHE_DIR), name="audio")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

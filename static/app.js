@@ -434,6 +434,7 @@ function showStudyView() {
   $("studyView").classList.remove("hidden");
   $("favoriteBtn").hidden = false;
   $("batchAnalyzeBtn").hidden = false;
+  $("listenModeBtn").hidden = false;
   $("toggleRailBtn").hidden = false;
   applyTweaks();
 }
@@ -444,6 +445,7 @@ function showLibraryView() {
   $("libraryView").classList.remove("hidden");
   $("favoriteBtn").hidden = true;
   $("batchAnalyzeBtn").hidden = true;
+  $("listenModeBtn").hidden = true;
   $("toggleRailBtn").hidden = true;
   $("reopenRailBtn")?.classList.add("hidden");
   renderCrumbs();
@@ -1735,6 +1737,11 @@ document.addEventListener("click", async (event) => {
     return;
   }
   if (target.id === "batchAnalyzeBtn") { await runBatchAnalyze(); return; }
+  if (target.id === "listenModeBtn") {
+    if (!state.currentArticle) return;
+    window.location.href = `/static/listen.html?id=${encodeURIComponent(state.currentArticle.id)}`;
+    return;
+  }
   // Step actions
   if (target.id === "runTextCheckBtn") {
     await runAction(target, "检查中…", async () => {
