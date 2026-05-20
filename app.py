@@ -1885,6 +1885,19 @@ def _analyze_sentence_for_listening(article: dict[str, Any], sentence: str) -> d
     return result
 
 
+@app.get("/api/articles/{article_id}/listening/sentences")
+def listening_sentences(article_id: str) -> dict[str, Any]:
+    article = find_article(article_id)
+    paragraphs = article.get("cleaned_paragraphs") or article.get("paragraphs") or []
+    if not paragraphs:
+        raise HTTPException(400, "文章暂无可用文本，请先完成文本检查。")
+    items: list[dict[str, Any]] = []
+    for para_idx, paragraph in enumerate(paragraphs):
+        for sentence in split_sentences(paragraph):
+            items.append({"index": len(items), "para": para_idx, "text": sentence})
+    return {"article_id": article_id, "title": article.get("title", ""), "sentences": items}
+
+
 @app.post("/api/articles/{article_id}/listening/prepare")
 def listening_prepare(article_id: str) -> dict[str, Any]:
     article = find_article(article_id)

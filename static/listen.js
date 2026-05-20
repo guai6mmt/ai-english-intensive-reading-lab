@@ -1,93 +1,129 @@
 /* ──────────────────────────────────────────────────────────────
-   Listening Mode — playback engine
-   Flow: prepare(全篇句子分析) → 渲染 → 用户点开始 → 顺序播放
-   预取后续 2 句音频；TTS 失败降级浏览器 SpeechSynthesis；
-   Media Session 锁屏控制；localStorage 续播。
+   Listening Mode v2
+   两阶段启动：
+   Phase 1 — GET /listening/sentences（<1s）→ 立刻渲染文章 + 激活控制栏
+   Phase 2 — POST /listening/prepare（10-30s）→ 后台跑 AI，完成后填充生词
    ────────────────────────────────────────────────────────────── */
 
 const $ = (id) => document.getElementById(id);
-const escapeHtml = (s) =>
-  String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const esc = (s) =>
+  String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+  );
 
-const PLAYBACK_RATES = [0.85, 1.0, 1.15, 1.3];
+const RATES = [0.85, 1.0, 1.15, 1.3];
 
 const state = {
   articleId: "",
   title: "",
-  sentences: [],         // [{ index, para, text, translation, vocab: [...] }]
+  sentences: [],       // [{ index, para, text, vocab?, translation? }]
+  analysisReady: false,
   currentIndex: 0,
-  audioUrlCache: new Map(),     // index -> Promise<url> (server-side cached URL)
-  currentAudio: null,           // HTMLAudioElement currently playing
+  audioCache: new Map(),   // index -> Promise<url>
+  currentAudio: null,
   isPlaying: false,
   playbackRate: 1.0,
-  fallbackTtsActive: false,     // true while browser SpeechSynthesis is the source
-  hasStarted: false,
+  fallbackActive: false,
   theme: localStorage.getItem("lp_theme") || "dark",
 };
 
-// ──────── Utils ────────
+// ── Helpers ──
 async function api(path, opts = {}) {
   const res = await fetch(path, opts);
   if (!res.ok) {
-    let detail = `${res.status}`;
-    try {
-      const data = await res.json();
-      detail = data.detail || data.message || detail;
-    } catch {}
-    throw new Error(detail);
+    let msg = `${res.status}`;
+    try { const d = await res.json(); msg = d.detail || d.message || msg; } catch {}
+    throw new Error(msg);
   }
   return res.json();
 }
 
-function getArticleIdFromUrl() {
-  const p = new URLSearchParams(window.location.search);
-  return p.get("id") || "";
+function getId() {
+  return new URLSearchParams(window.location.search).get("id") || "";
 }
 
-function setStatus(text) {
+function applyTheme(t) {
+  document.documentElement.setAttribute("data-theme", t);
+  state.theme = t;
+  localStorage.setItem("lp_theme", t);
+}
+
+function setSub(text) {
   const el = $("lpSub");
   if (el) el.textContent = text;
 }
 
-function setLoadingText(text) {
-  const el = $("lpLoadingText");
-  if (el) el.textContent = text;
+function setControls(enabled) {
+  ["lpPrevBtn", "lpRepeatBtn", "lpPlayBtn", "lpNextBtn"].forEach((id) => {
+    const btn = $(id);
+    if (btn) btn.disabled = !enabled;
+  });
 }
 
-function applyTheme(theme) {
-  document.documentElement.setAttribute("data-theme", theme);
-  state.theme = theme;
-  localStorage.setItem("lp_theme", theme);
+// ── Progress bar ──
+function updateProgress() {
+  const n = state.sentences.length;
+  if (!n) return;
+  $("lpProgressIndex").textContent = String(state.currentIndex + 1);
+  $("lpProgressTotal").textContent  = String(n);
+  const pct = ((state.currentIndex + 1) / n) * 100;
+  $("lpProgressFill").style.right = `${100 - pct}%`;
 }
 
-// ──────── Loading: prepare ────────
-async function prepareArticle() {
-  state.articleId = getArticleIdFromUrl();
-  if (!state.articleId) {
-    setLoadingText("缺少文章 ID");
+function updatePlayBtn() {
+  $("lpPlayBtn").textContent = state.isPlaying ? "❚❚" : "▶";
+}
+
+// ── Vocab panel ──
+function setVocabStatus(mode) {
+  const el = $("lpVocabStatus");
+  if (!el) return;
+  el.className = "lp-vocab-status";
+  if (mode === "analyzing") {
+    el.classList.add("analyzing");
+    el.textContent = "分析中";
+  } else if (mode === "done") {
+    el.classList.add("done");
+    el.textContent = "✓";
+    setTimeout(() => { el.textContent = ""; el.className = "lp-vocab-status"; }, 2500);
+  } else {
+    el.textContent = "";
+  }
+}
+
+function renderVocab(idx) {
+  const body = $("lpVocabBody");
+  const s = state.sentences[idx];
+  if (!s) return;
+
+  // Still analyzing and no vocab yet — show inline waiting state
+  if (!state.analysisReady && (!s.vocab || s.vocab.length === 0)) {
+    body.innerHTML = `<div class="lp-vocab-hint">生词分析中，稍候…</div>`;
     return;
   }
-  setLoadingText("分析全文句子中…");
-  try {
-    const data = await api(`/api/articles/${encodeURIComponent(state.articleId)}/listening/prepare`, {
-      method: "POST",
-    });
-    state.title = data.title || "";
-    state.sentences = data.sentences || [];
-    if (!state.sentences.length) {
-      setLoadingText("此文章没有可朗读的句子。");
-      return;
-    }
-    $("lpTitle").textContent = state.title || "听力模式";
-    document.title = `${state.title || "听力模式"} · 听力模式`;
-    renderArticle();
-    enterReadyState();
-  } catch (err) {
-    console.error(err);
-    setLoadingText(`加载失败：${err.message || err}`);
+
+  const items = (s.vocab || []).slice(0, 10);
+  let html = items.length === 0
+    ? `<div class="lp-vocab-hint">本句无标记生词</div>`
+    : items.map((v) => `
+        <div class="lp-vocab-item">
+          <div class="lp-vocab-term">${esc(v.term)}</div>
+          ${v.meaning ? `<div class="lp-vocab-meaning">${esc(v.meaning)}</div>` : ""}
+          ${v.note    ? `<div class="lp-vocab-note">${esc(v.note)}</div>` : ""}
+        </div>`).join("");
+
+  if (s.translation) {
+    html += `
+      <div class="lp-vocab-translation">
+        <div class="lp-vocab-translation-label">中文译文</div>
+        ${esc(s.translation)}
+      </div>`;
   }
+  body.innerHTML = html;
+  body.scrollTop = 0;
 }
 
+// ── Article rendering ──
 function renderArticle() {
   const container = $("lpArticle");
   const byPara = new Map();
@@ -97,187 +133,148 @@ function renderArticle() {
   }
   const html = Array.from(byPara.entries())
     .sort((a, b) => a[0] - b[0])
-    .map(([_, list]) => {
-      const inner = list
-        .map(
-          (s) =>
-            `<span class="lp-sent" data-idx="${s.index}">${escapeHtml(s.text)} </span>`
-        )
-        .join("");
-      return `<p class="lp-para">${inner}</p>`;
-    })
-    .join("");
+    .map(([, list]) =>
+      `<p class="lp-para">${list.map((s) =>
+        `<span class="lp-sent" data-idx="${s.index}">${esc(s.text)} </span>`
+      ).join("")}</p>`
+    ).join("");
   container.innerHTML = html;
 }
 
-function enterReadyState() {
-  $("lpRoot").dataset.state = "ready";
-  $("lpLoading").hidden = true;
-  $("lpMain").hidden = false;
-  $("lpControls").hidden = false;
-  $("lpStartOverlay").hidden = false;
-  $("lpProgressTotal").textContent = state.sentences.length;
-
-  const resumed = readProgress();
-  if (resumed > 0 && resumed < state.sentences.length) {
-    $("lpStartText").textContent = `从第 ${resumed + 1} 句继续`;
-    $("lpStartSub").textContent = "上次的阅读位置已保存";
-    state.currentIndex = resumed;
-  } else {
-    $("lpStartText").textContent = "开始播放";
-    $("lpStartSub").textContent = `共 ${state.sentences.length} 句`;
-  }
-  updateProgress();
-  setupMediaSession();
+function highlightSentence(idx) {
+  document.querySelectorAll(".lp-sent").forEach((el) => {
+    const i = Number(el.dataset.idx);
+    el.classList.toggle("playing", i === idx);
+    el.classList.toggle("read",    i < idx);
+  });
+  const target = document.querySelector(`.lp-sent[data-idx="${idx}"]`);
+  if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
-// ──────── Audio fetch + prefetch ────────
-async function fetchSentenceAudio(idx) {
-  if (state.audioUrlCache.has(idx)) return state.audioUrlCache.get(idx);
-  const sentence = state.sentences[idx];
-  if (!sentence) return null;
-  const promise = api("/api/audio/sentence", {
+// ── Persistence ──
+const progressKey = () => `lp_progress_${state.articleId}`;
+const saveProgress = () => {
+  try { localStorage.setItem(progressKey(), String(state.currentIndex)); } catch {}
+};
+const loadProgress = () => {
+  try { return Number(localStorage.getItem(progressKey()) || 0); } catch { return 0; }
+};
+
+// ── Audio ──
+async function fetchAudio(idx) {
+  if (state.audioCache.has(idx)) return state.audioCache.get(idx);
+  const s = state.sentences[idx];
+  if (!s) return null;
+  const p = api("/api/audio/sentence", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text: sentence.text }),
+    body: JSON.stringify({ text: s.text }),
   })
     .then((d) => d.audio_url)
-    .catch((err) => {
-      state.audioUrlCache.delete(idx);
-      throw err;
-    });
-  state.audioUrlCache.set(idx, promise);
-  return promise;
+    .catch((err) => { state.audioCache.delete(idx); throw err; });
+  state.audioCache.set(idx, p);
+  return p;
 }
 
-function prefetchAround(idx) {
+function prefetch(idx) {
   for (let k = 1; k <= 2; k++) {
     const next = idx + k;
-    if (next < state.sentences.length) {
-      fetchSentenceAudio(next).catch(() => {}); // fire-and-forget
-    }
+    if (next < state.sentences.length) fetchAudio(next).catch(() => {});
   }
 }
 
-// ──────── Playback ────────
-async function playSentence(idx) {
-  if (idx < 0 || idx >= state.sentences.length) return;
-  stopCurrentAudio();
-  state.currentIndex = idx;
-  state.isPlaying = true;
-  highlightSentence(idx);
-  renderVocab(idx);
-  updateProgress();
-  saveProgress();
-  updatePlayButton();
-  updateMediaSessionMetadata();
-  prefetchAround(idx);
-
-  try {
-    const url = await fetchSentenceAudio(idx);
-    if (!url) throw new Error("audio url empty");
-    // If user clicked next/prev while waiting, abandon this start.
-    if (state.currentIndex !== idx || !state.isPlaying) return;
-    const audio = new Audio(url);
-    audio.playbackRate = state.playbackRate;
-    audio.preload = "auto";
-    audio.onended = handleSentenceEnded;
-    audio.onerror = () => {
-      console.warn("audio element error, fallback to browser TTS");
-      playWithBrowserTts(state.sentences[idx].text);
-    };
-    state.currentAudio = audio;
-    await audio.play();
-  } catch (err) {
-    console.warn("Qwen TTS failed, falling back to browser SpeechSynthesis:", err);
-    playWithBrowserTts(state.sentences[idx].text);
-  }
-}
-
-function playWithBrowserTts(text) {
-  if (!("speechSynthesis" in window)) {
-    alert("当前浏览器不支持语音合成。");
-    state.isPlaying = false;
-    updatePlayButton();
-    return;
-  }
-  state.fallbackTtsActive = true;
-  window.speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = "en-US";
-  u.rate = 0.9 * state.playbackRate;
-  u.onend = () => {
-    state.fallbackTtsActive = false;
-    handleSentenceEnded();
-  };
-  u.onerror = () => {
-    state.fallbackTtsActive = false;
-    handleSentenceEnded();
-  };
-  window.speechSynthesis.speak(u);
-}
-
-function stopCurrentAudio() {
+// ── Playback ──
+function stopCurrent() {
   if (state.currentAudio) {
     state.currentAudio.onended = null;
     state.currentAudio.onerror = null;
     try { state.currentAudio.pause(); } catch {}
     state.currentAudio = null;
   }
-  if (state.fallbackTtsActive && "speechSynthesis" in window) {
+  if (state.fallbackActive && "speechSynthesis" in window) {
     window.speechSynthesis.cancel();
-    state.fallbackTtsActive = false;
+    state.fallbackActive = false;
   }
 }
 
-function handleSentenceEnded() {
+function browserTts(text) {
+  if (!("speechSynthesis" in window)) { state.isPlaying = false; updatePlayBtn(); return; }
+  state.fallbackActive = true;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "en-US";
+  u.rate = 0.9 * state.playbackRate;
+  u.onend  = () => { state.fallbackActive = false; onSentenceEnd(); };
+  u.onerror = () => { state.fallbackActive = false; onSentenceEnd(); };
+  window.speechSynthesis.speak(u);
+}
+
+function onSentenceEnd() {
   if (!state.isPlaying) return;
   const next = state.currentIndex + 1;
   if (next >= state.sentences.length) {
     state.isPlaying = false;
-    updatePlayButton();
-    setStatus("播放完毕");
+    updatePlayBtn();
+    setSub("播放完毕");
     return;
   }
   playSentence(next);
 }
 
+async function playSentence(idx) {
+  if (idx < 0 || idx >= state.sentences.length) return;
+  stopCurrent();
+  state.currentIndex = idx;
+  state.isPlaying = true;
+  highlightSentence(idx);
+  renderVocab(idx);
+  updateProgress();
+  saveProgress();
+  updatePlayBtn();
+  updateMediaMeta();
+  prefetch(idx);
+
+  try {
+    const url = await fetchAudio(idx);
+    if (!url) throw new Error("no url");
+    if (state.currentIndex !== idx || !state.isPlaying) return; // user jumped away
+    const audio = new Audio(url);
+    audio.playbackRate = state.playbackRate;
+    audio.preload = "auto";
+    audio.onended = onSentenceEnd;
+    audio.onerror = () => browserTts(state.sentences[idx].text);
+    state.currentAudio = audio;
+    await audio.play();
+  } catch {
+    browserTts(state.sentences[idx].text);
+  }
+}
+
 function pause() {
   state.isPlaying = false;
-  if (state.currentAudio) {
-    try { state.currentAudio.pause(); } catch {}
-  }
-  if (state.fallbackTtsActive && "speechSynthesis" in window) {
-    window.speechSynthesis.pause();
-  }
-  updatePlayButton();
+  try { state.currentAudio?.pause(); } catch {}
+  if (state.fallbackActive && "speechSynthesis" in window) window.speechSynthesis.pause();
+  updatePlayBtn();
 }
 
 function resume() {
-  if (state.currentAudio && state.currentAudio.paused) {
+  if (state.currentAudio?.paused) {
     state.isPlaying = true;
     state.currentAudio.play().catch(() => playSentence(state.currentIndex));
-    updatePlayButton();
+    updatePlayBtn();
     return;
   }
-  if (state.fallbackTtsActive && "speechSynthesis" in window && window.speechSynthesis.paused) {
+  if (state.fallbackActive && window.speechSynthesis?.paused) {
     state.isPlaying = true;
     window.speechSynthesis.resume();
-    updatePlayButton();
+    updatePlayBtn();
     return;
   }
   playSentence(state.currentIndex);
 }
 
 function togglePlay() {
-  if (!state.hasStarted) {
-    state.hasStarted = true;
-    $("lpStartOverlay").hidden = true;
-    playSentence(state.currentIndex);
-    return;
-  }
-  if (state.isPlaying) pause();
-  else resume();
+  if (state.isPlaying) pause(); else resume();
 }
 
 function repeatCurrent() {
@@ -285,115 +282,106 @@ function repeatCurrent() {
     state.currentAudio.currentTime = 0;
     state.isPlaying = true;
     state.currentAudio.play().catch(() => playSentence(state.currentIndex));
-    updatePlayButton();
-    return;
+    updatePlayBtn();
+  } else {
+    playSentence(state.currentIndex);
   }
-  playSentence(state.currentIndex);
 }
 
 function cycleRate() {
   const cur = state.playbackRate;
-  const idx = PLAYBACK_RATES.findIndex((r) => Math.abs(r - cur) < 0.01);
-  const next = PLAYBACK_RATES[(idx + 1) % PLAYBACK_RATES.length];
+  const i = RATES.findIndex((r) => Math.abs(r - cur) < 0.01);
+  const next = RATES[(i + 1) % RATES.length];
   state.playbackRate = next;
   $("lpRateBtn").textContent = `${next.toFixed(2).replace(/\.?0+$/, "")}x`;
   if (state.currentAudio) state.currentAudio.playbackRate = next;
 }
 
-// ──────── Rendering helpers ────────
-function highlightSentence(idx) {
-  document.querySelectorAll(".lp-sent.playing").forEach((el) => el.classList.remove("playing"));
-  document.querySelectorAll(".lp-sent").forEach((el) => {
-    const i = Number(el.dataset.idx);
-    el.classList.toggle("read", i < idx);
-  });
-  const target = document.querySelector(`.lp-sent[data-idx="${idx}"]`);
-  if (target) {
-    target.classList.add("playing");
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
-  }
-}
-
-function renderVocab(idx) {
-  const body = $("lpVocabBody");
-  const s = state.sentences[idx];
-  if (!s) return;
-  const items = (s.vocab || []).slice(0, 10);
-  let html = "";
-  if (items.length === 0) {
-    html += `<div class="lp-vocab-empty">本句无标记生词</div>`;
-  } else {
-    html += items
-      .map(
-        (v) => `
-        <div class="lp-vocab-item">
-          <div class="lp-vocab-term">${escapeHtml(v.term)}</div>
-          ${v.meaning ? `<div class="lp-vocab-meaning">${escapeHtml(v.meaning)}</div>` : ""}
-          ${v.note ? `<div class="lp-vocab-note">${escapeHtml(v.note)}</div>` : ""}
-        </div>`
-      )
-      .join("");
-  }
-  if (s.translation) {
-    html += `
-      <div class="lp-vocab-translation">
-        <div class="lp-vocab-translation-label">中文译文</div>
-        ${escapeHtml(s.translation)}
-      </div>`;
-  }
-  body.innerHTML = html;
-  body.scrollTop = 0;
-}
-
-function updateProgress() {
-  $("lpProgressIndex").textContent = String(state.currentIndex + 1);
-  const total = state.sentences.length || 1;
-  const pct = ((state.currentIndex + 1) / total) * 100;
-  $("lpProgressFill").style.right = `${100 - pct}%`;
-}
-
-function updatePlayButton() {
-  $("lpPlayBtn").textContent = state.isPlaying ? "❚❚" : "▶";
-}
-
-// ──────── Progress persistence ────────
-function progressKey() {
-  return `lp_progress_${state.articleId}`;
-}
-function saveProgress() {
-  try { localStorage.setItem(progressKey(), String(state.currentIndex)); } catch {}
-}
-function readProgress() {
-  try { return Number(localStorage.getItem(progressKey()) || 0); } catch { return 0; }
-}
-
-// ──────── Media Session (lock-screen controls) ────────
+// ── Media Session ──
 function setupMediaSession() {
   if (!("mediaSession" in navigator)) return;
-  navigator.mediaSession.setActionHandler("play", () => {
-    if (!state.hasStarted) togglePlay();
-    else resume();
-  });
-  navigator.mediaSession.setActionHandler("pause", () => pause());
+  navigator.mediaSession.setActionHandler("play",          () => resume());
+  navigator.mediaSession.setActionHandler("pause",         () => pause());
   navigator.mediaSession.setActionHandler("previoustrack", () => playSentence(Math.max(0, state.currentIndex - 1)));
-  navigator.mediaSession.setActionHandler("nexttrack", () => playSentence(Math.min(state.sentences.length - 1, state.currentIndex + 1)));
+  navigator.mediaSession.setActionHandler("nexttrack",     () => playSentence(Math.min(state.sentences.length - 1, state.currentIndex + 1)));
 }
 
-function updateMediaSessionMetadata() {
+function updateMediaMeta() {
   if (!("mediaSession" in navigator) || !("MediaMetadata" in window)) return;
   try {
     navigator.mediaSession.metadata = new MediaMetadata({
-      title: state.sentences[state.currentIndex]?.text?.slice(0, 80) || state.title,
+      title:  state.sentences[state.currentIndex]?.text?.slice(0, 80) || state.title,
       artist: "English Lab · 听力模式",
-      album: state.title,
+      album:  state.title,
     });
   } catch {}
 }
 
-// ──────── Event wiring ────────
+// ── Boot: Phase 1 ── fetch sentences immediately
+async function phase1() {
+  state.articleId = getId();
+  if (!state.articleId) { setSub("缺少文章 ID"); return false; }
+
+  try {
+    const data = await api(`/api/articles/${encodeURIComponent(state.articleId)}/listening/sentences`);
+    state.title     = data.title || "";
+    state.sentences = data.sentences || [];
+
+    if (!state.sentences.length) { setSub("文章暂无可朗读的句子"); return false; }
+
+    $("lpTitle").textContent = state.title || "听力模式";
+    document.title = `${state.title} · 听力模式`;
+
+    renderArticle();
+
+    // Restore saved position
+    const saved = loadProgress();
+    state.currentIndex = (saved > 0 && saved < state.sentences.length) ? saved : 0;
+    highlightSentence(state.currentIndex);
+    updateProgress();
+
+    if (saved > 0 && saved < state.sentences.length) {
+      setSub(`从第 ${saved + 1} 句继续`);
+    } else {
+      setSub(`共 ${state.sentences.length} 句`);
+    }
+
+    setControls(true);
+    setVocabStatus("analyzing");
+    setupMediaSession();
+    return true;
+  } catch (err) {
+    setSub(`加载失败：${err.message}`);
+    return false;
+  }
+}
+
+// ── Boot: Phase 2 ── AI analysis in background
+async function phase2() {
+  try {
+    const data = await api(
+      `/api/articles/${encodeURIComponent(state.articleId)}/listening/prepare`,
+      { method: "POST" }
+    );
+    const byIdx = new Map((data.sentences || []).map((s) => [s.index, s]));
+    for (const s of state.sentences) {
+      const enriched = byIdx.get(s.index);
+      if (enriched) { s.vocab = enriched.vocab; s.translation = enriched.translation; }
+    }
+    state.analysisReady = true;
+    setVocabStatus("done");
+    // Refresh vocab panel if currently playing
+    if (state.isPlaying || state.currentAudio) renderVocab(state.currentIndex);
+  } catch (err) {
+    console.warn("Background prepare failed:", err);
+    setVocabStatus("");
+  }
+}
+
+// ── Events ──
 function wireEvents() {
   $("lpBackBtn").addEventListener("click", () => {
-    stopCurrentAudio();
+    stopCurrent();
     window.location.href = "/static/index.html";
   });
   $("lpThemeBtn").addEventListener("click", () => {
@@ -403,61 +391,49 @@ function wireEvents() {
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
       else await document.documentElement.requestFullscreen();
-    } catch (err) {
-      console.warn("fullscreen failed", err);
-    }
+    } catch {}
   });
 
-  $("lpStartBtn").addEventListener("click", togglePlay);
-  $("lpPlayBtn").addEventListener("click", togglePlay);
-  $("lpPrevBtn").addEventListener("click", () => playSentence(Math.max(0, state.currentIndex - 1)));
-  $("lpNextBtn").addEventListener("click", () => playSentence(Math.min(state.sentences.length - 1, state.currentIndex + 1)));
+  $("lpPlayBtn").addEventListener("click",   togglePlay);
+  $("lpPrevBtn").addEventListener("click",   () => playSentence(Math.max(0, state.currentIndex - 1)));
+  $("lpNextBtn").addEventListener("click",   () => playSentence(Math.min(state.sentences.length - 1, state.currentIndex + 1)));
   $("lpRepeatBtn").addEventListener("click", repeatCurrent);
-  $("lpRateBtn").addEventListener("click", cycleRate);
+  $("lpRateBtn").addEventListener("click",   cycleRate);
 
-  // Click any sentence to jump
+  // Tap any sentence → jump there
   $("lpArticle").addEventListener("click", (e) => {
-    const target = e.target.closest(".lp-sent");
-    if (!target) return;
-    const idx = Number(target.dataset.idx);
-    if (!Number.isFinite(idx)) return;
-    state.hasStarted = true;
-    $("lpStartOverlay").hidden = true;
-    playSentence(idx);
+    const el = e.target.closest(".lp-sent");
+    if (!el) return;
+    const idx = Number(el.dataset.idx);
+    if (Number.isFinite(idx)) playSentence(idx);
   });
 
-  // Click progress bar to jump
+  // Click progress bar → jump
   $("lpProgressBar").addEventListener("click", (e) => {
-    const rect = e.currentTarget.getBoundingClientRect();
+    const rect  = e.currentTarget.getBoundingClientRect();
     const ratio = (e.clientX - rect.left) / rect.width;
-    const idx = Math.max(0, Math.min(state.sentences.length - 1, Math.floor(ratio * state.sentences.length)));
-    state.hasStarted = true;
-    $("lpStartOverlay").hidden = true;
+    const idx   = Math.max(0, Math.min(state.sentences.length - 1, Math.floor(ratio * state.sentences.length)));
     playSentence(idx);
   });
 
-  // Keyboard shortcuts (desktop)
+  // Keyboard shortcuts
   window.addEventListener("keydown", (e) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
-    if (e.code === "Space") { e.preventDefault(); togglePlay(); }
-    else if (e.code === "ArrowLeft") { e.preventDefault(); playSentence(Math.max(0, state.currentIndex - 1)); }
+    if      (e.code === "Space")      { e.preventDefault(); togglePlay(); }
+    else if (e.code === "ArrowLeft")  { e.preventDefault(); playSentence(Math.max(0, state.currentIndex - 1)); }
     else if (e.code === "ArrowRight") { e.preventDefault(); playSentence(Math.min(state.sentences.length - 1, state.currentIndex + 1)); }
-    else if (e.code === "KeyR") { e.preventDefault(); repeatCurrent(); }
+    else if (e.code === "KeyR")       { e.preventDefault(); repeatCurrent(); }
   });
 
-  // Pause when tab hidden to avoid double playback after unlocking
-  document.addEventListener("visibilitychange", () => {
-    // Intentionally do not auto-pause — user may want background playback.
-    // Just save progress.
-    saveProgress();
-  });
+  document.addEventListener("visibilitychange", saveProgress);
 }
 
-// ──────── Boot ────────
-function boot() {
+// ── Entry ──
+async function boot() {
   applyTheme(state.theme);
   wireEvents();
-  prepareArticle();
+  const ok = await phase1();
+  if (ok) phase2(); // fire-and-forget background analysis
 }
 
 document.addEventListener("DOMContentLoaded", boot);
