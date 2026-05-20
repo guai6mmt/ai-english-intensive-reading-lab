@@ -540,7 +540,7 @@ async function phaseAlignedAudio() {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enable_words: false }),
+        body: JSON.stringify({ enable_words: true }),
       }
     );
 

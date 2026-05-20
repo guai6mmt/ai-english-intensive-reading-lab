@@ -229,7 +229,7 @@ class SpeechRequest(BaseModel):
 
 class AlignedAudioRequest(BaseModel):
     refresh: bool = False
-    enable_words: bool = False
+    enable_words: bool = True
     voice: str | None = None
     language_type: str | None = None
 
@@ -1549,9 +1549,17 @@ def chunk_sentences_for_tts(items: list[dict[str, Any]], max_chars: int = 1450) 
     return chunks
 
 
-def aligned_audio_cache_key(article_id: str, items: list[dict[str, Any]], voice: str, language_type: str, tts_model: str, asr_model: str) -> str:
+def aligned_audio_cache_key(
+    article_id: str,
+    items: list[dict[str, Any]],
+    voice: str,
+    language_type: str,
+    tts_model: str,
+    asr_model: str,
+    enable_words: bool = True,
+) -> str:
     text_hash = stable_id(*(item["text"] for item in items[:300]), str(len(items)))
-    payload = f"{article_id}|{text_hash}|{voice}|{language_type}|{tts_model}|{asr_model}|v1"
+    payload = f"{article_id}|{text_hash}|{voice}|{language_type}|{tts_model}|{asr_model}|words:{int(enable_words)}|v2"
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
@@ -1747,7 +1755,94 @@ def normalize_for_alignment(text: str) -> str:
     return text.strip()
 
 
+def _asr_word_timings(asr_sentences: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    word_items: list[dict[str, Any]] = []
+    for sentence in asr_sentences:
+        for word in sentence.get("words") or []:
+            if not isinstance(word, dict):
+                continue
+            text = clean_text(str(word.get("text") or word.get("word") or ""))
+            norm = normalize_for_alignment(text)
+            begin = _time_value(word, "begin_time", "start_time", "begin", "start")
+            end = _time_value(word, "end_time", "finish_time", "end", "stop")
+            if not text or not norm or begin is None or end is None or end <= begin:
+                continue
+            word_items.append({
+                "text": text,
+                "norm": norm,
+                "begin_ms": begin,
+                "end_ms": end,
+                "raw": word,
+            })
+    return sorted(word_items, key=lambda item: (item["begin_ms"], item["end_ms"]))
+
+
+def align_asr_words_to_original(items: list[dict[str, Any]], asr_sentences: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    word_items = _asr_word_timings(asr_sentences)
+    if not word_items:
+        return []
+
+    alignments: list[dict[str, Any]] = []
+    cursor = 0
+    for item in items:
+        original_norm = normalize_for_alignment(item["text"])
+        original_words = original_norm.split()
+        if not original_words or cursor >= len(word_items):
+            alignments.append({
+                "index": item["index"],
+                "para": item["para"],
+                "text": item["text"],
+                "asr_text": "",
+                "begin_ms": None,
+                "end_ms": None,
+                "confidence": 0.0,
+                "words": [],
+            })
+            continue
+
+        expected = len(original_words)
+        min_end = cursor + max(1, expected - 8)
+        max_end = min(len(word_items), cursor + expected + 10)
+        min_end = min(min_end, max_end)
+        best: tuple[float, int, str] | None = None
+        for end in range(cursor + 1, max_end + 1):
+            if end < min_end:
+                continue
+            candidate = " ".join(w["norm"] for w in word_items[cursor:end])
+            score = difflib.SequenceMatcher(None, original_norm, candidate).ratio()
+            if best is None or score > best[0]:
+                best = (score, end, candidate)
+
+        if best is None:
+            end = min(len(word_items), cursor + expected)
+            score = 0.0
+        else:
+            score, end, _candidate = best
+
+        selected = word_items[cursor:end]
+        cursor = end
+        alignments.append({
+            "index": item["index"],
+            "para": item["para"],
+            "text": item["text"],
+            "asr_text": " ".join(w["text"] for w in selected),
+            "begin_ms": selected[0]["begin_ms"] if selected else None,
+            "end_ms": selected[-1]["end_ms"] if selected else None,
+            "confidence": round(score, 3),
+            "words": [w["raw"] for w in selected],
+        })
+    return alignments
+
+
 def align_asr_to_original(items: list[dict[str, Any]], asr_sentences: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    word_alignments = align_asr_words_to_original(items, asr_sentences)
+    valid_word_alignments = [
+        item for item in word_alignments
+        if item.get("begin_ms") is not None and item.get("end_ms") is not None
+    ]
+    if valid_word_alignments and len(valid_word_alignments) >= max(1, int(len(items) * 0.65)):
+        return word_alignments
+
     alignments: list[dict[str, Any]] = []
     j = 0
     for item in items:
@@ -2415,7 +2510,15 @@ def _aligned_audio_prepare(
     asr_config = qwen_asr_config()
     voice = (request.voice or tts_config["voice"]).strip() or "Ethan"
     language_type = (request.language_type or tts_config["language_type"]).strip() or "English"
-    key = aligned_audio_cache_key(article_id, items, voice, language_type, tts_config["model"], asr_config["model"])
+    key = aligned_audio_cache_key(
+        article_id,
+        items,
+        voice,
+        language_type,
+        tts_config["model"],
+        asr_config["model"],
+        enable_words=request.enable_words,
+    )
     audio_url = f"/audio/{key}.wav"
     audio_path = AUDIO_CACHE_DIR / f"{key}.wav"
     align_path = AUDIO_CACHE_DIR / f"{key}.align.json"
