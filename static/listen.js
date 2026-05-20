@@ -21,6 +21,10 @@ const state = {
   currentIndex: 0,
   audioCache: new Map(),   // index -> Promise<url>
   currentAudio: null,
+  alignedAudio: null,
+  alignedReady: false,
+  alignedLoading: false,
+  alignedFailed: false,
   isPlaying: false,
   playbackRate: 1.0,
   fallbackActive: false,
@@ -177,9 +181,63 @@ async function fetchAudio(idx) {
 }
 
 function prefetch(idx) {
+  if (state.alignedReady) return;
   for (let k = 1; k <= 2; k++) {
     const next = idx + k;
     if (next < state.sentences.length) fetchAudio(next).catch(() => {});
+  }
+}
+
+function validAlignment(s) {
+  return Number.isFinite(s?.begin_ms) && Number.isFinite(s?.end_ms) && s.end_ms > s.begin_ms;
+}
+
+function hasAlignedTimeline() {
+  return state.alignedReady && state.sentences.some(validAlignment);
+}
+
+function ensureAlignedAudio() {
+  if (state.alignedAudio) return state.alignedAudio;
+  const url = state.alignedAudioUrl;
+  if (!url) return null;
+  const audio = new Audio(url);
+  audio.playbackRate = state.playbackRate;
+  audio.preload = "auto";
+  audio.ontimeupdate = syncHighlightToAudio;
+  audio.onended = () => {
+    state.isPlaying = false;
+    updatePlayBtn();
+    setSub("播放完毕");
+  };
+  audio.onerror = () => {
+    state.alignedFailed = true;
+    browserTts(state.sentences[state.currentIndex]?.text || "");
+  };
+  state.alignedAudio = audio;
+  return audio;
+}
+
+function findSentenceByTime(ms) {
+  let fallback = state.currentIndex;
+  for (const s of state.sentences) {
+    if (!validAlignment(s)) continue;
+    if (ms >= s.begin_ms && ms < s.end_ms) return s.index;
+    if (ms >= s.end_ms) fallback = s.index;
+  }
+  return fallback;
+}
+
+function syncHighlightToAudio() {
+  if (!state.currentAudio || state.currentAudio !== state.alignedAudio) return;
+  const ms = state.currentAudio.currentTime * 1000;
+  const idx = findSentenceByTime(ms);
+  if (idx !== state.currentIndex && state.sentences[idx]) {
+    state.currentIndex = idx;
+    highlightSentence(idx);
+    renderVocab(idx);
+    updateProgress();
+    saveProgress();
+    updateMediaMeta();
   }
 }
 
@@ -234,6 +292,22 @@ async function playSentence(idx) {
   updateMediaMeta();
   prefetch(idx);
 
+  if (hasAlignedTimeline() && validAlignment(state.sentences[idx])) {
+    const audio = ensureAlignedAudio();
+    if (!audio) {
+      state.alignedFailed = true;
+    } else {
+      state.currentAudio = audio;
+      audio.playbackRate = state.playbackRate;
+      audio.currentTime = Math.max(0, state.sentences[idx].begin_ms / 1000);
+      await audio.play().catch(() => {
+        state.alignedFailed = true;
+        browserTts(state.sentences[idx].text);
+      });
+      return;
+    }
+  }
+
   try {
     const url = await fetchAudio(idx);
     if (!url) throw new Error("no url");
@@ -278,6 +352,10 @@ function togglePlay() {
 }
 
 function repeatCurrent() {
+  if (hasAlignedTimeline() && validAlignment(state.sentences[state.currentIndex])) {
+    playSentence(state.currentIndex);
+    return;
+  }
   if (state.currentAudio) {
     state.currentAudio.currentTime = 0;
     state.isPlaying = true;
@@ -378,6 +456,45 @@ async function phase2() {
   }
 }
 
+// ── Phase 3 ── precise whole-article audio timeline
+async function phaseAlignedAudio() {
+  if (state.alignedLoading || state.alignedReady) return;
+  state.alignedLoading = true;
+  const previousSub = $("lpSub")?.textContent || "";
+  if (!state.isPlaying) setSub(`${previousSub || `共 ${state.sentences.length} 句`} · 正在生成精准时间轴`);
+  try {
+    const data = await api(
+      `/api/articles/${encodeURIComponent(state.articleId)}/listening/aligned-audio`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enable_words: false }),
+      }
+    );
+    state.alignedAudioUrl = data.audio_url;
+    const byIdx = new Map((data.alignments || []).map((s) => [s.index, s]));
+    for (const s of state.sentences) {
+      const aligned = byIdx.get(s.index);
+      if (!aligned) continue;
+      s.begin_ms = Number(aligned.begin_ms);
+      s.end_ms = Number(aligned.end_ms);
+      s.asr_text = aligned.asr_text;
+      s.align_confidence = aligned.confidence;
+      s.words = aligned.words || [];
+    }
+    state.alignedReady = true;
+    state.alignedFailed = false;
+    ensureAlignedAudio();
+    if (!state.isPlaying) setSub(`共 ${state.sentences.length} 句 · 精准时间轴已就绪`);
+  } catch (err) {
+    state.alignedFailed = true;
+    console.warn("Aligned audio failed:", err);
+    if (!state.isPlaying) setSub(previousSub || `共 ${state.sentences.length} 句`);
+  } finally {
+    state.alignedLoading = false;
+  }
+}
+
 // ── Events ──
 function wireEvents() {
   $("lpBackBtn").addEventListener("click", () => {
@@ -412,7 +529,13 @@ function wireEvents() {
   $("lpProgressBar").addEventListener("click", (e) => {
     const rect  = e.currentTarget.getBoundingClientRect();
     const ratio = (e.clientX - rect.left) / rect.width;
-    const idx   = Math.max(0, Math.min(state.sentences.length - 1, Math.floor(ratio * state.sentences.length)));
+    let idx;
+    if (hasAlignedTimeline() && state.alignedAudio?.duration) {
+      idx = findSentenceByTime(ratio * state.alignedAudio.duration * 1000);
+    } else {
+      idx = Math.floor(ratio * state.sentences.length);
+    }
+    idx = Math.max(0, Math.min(state.sentences.length - 1, idx));
     playSentence(idx);
   });
 
@@ -433,7 +556,10 @@ async function boot() {
   applyTheme(state.theme);
   wireEvents();
   const ok = await phase1();
-  if (ok) phase2(); // fire-and-forget background analysis
+  if (ok) {
+    phase2(); // fire-and-forget background analysis
+    phaseAlignedAudio(); // fire-and-forget precise timeline
+  }
 }
 
 document.addEventListener("DOMContentLoaded", boot);

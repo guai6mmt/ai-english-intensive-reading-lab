@@ -98,6 +98,15 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 QWEN_API_KEY=你的 Qwen / DashScope API Key
 QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 QWEN_MODEL=qwen-plus
+
+# 可选：听力模式整篇音频时间轴对齐
+DASHSCOPE_API_KEY=你的 DashScope API Key
+QWEN_ASR_MODEL=qwen3-asr-flash-filetrans
+OSS_ACCESS_KEY_ID=你的 OSS AccessKey ID
+OSS_ACCESS_KEY_SECRET=你的 OSS AccessKey Secret
+OSS_BUCKET=你的 Bucket 名称
+OSS_ENDPOINT=https://oss-cn-hangzhou.aliyuncs.com
+OSS_TEMP_PREFIX=asr-temp/
 ```
 
 也可以直接在网页右上角 → **设置** → 填入 Key → 保存，效果相同。

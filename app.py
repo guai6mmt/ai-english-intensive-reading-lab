@@ -36,6 +36,11 @@ try:
 except Exception:  # pragma: no cover - fallback keeps local mode usable.
     OpenAI = None
 
+try:
+    import oss2
+except Exception:  # pragma: no cover - OSS is optional until aligned audio is used.
+    oss2 = None
+
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -73,6 +78,15 @@ QWEN_TTS_DEFAULTS = {
     "model": os.getenv("QWEN_TTS_MODEL", "qwen3-tts-flash"),
     "voice": os.getenv("QWEN_TTS_VOICE", "Ethan"),
     "language_type": os.getenv("QWEN_TTS_LANGUAGE_TYPE", "English"),
+}
+QWEN_ASR_DEFAULTS = {
+    "base_url": os.getenv("QWEN_ASR_BASE_URL", os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1")),
+    "model": os.getenv("QWEN_ASR_MODEL", "qwen3-asr-flash-filetrans"),
+}
+OSS_DEFAULTS = {
+    "endpoint": os.getenv("OSS_ENDPOINT", ""),
+    "bucket": os.getenv("OSS_BUCKET", ""),
+    "temp_prefix": os.getenv("OSS_TEMP_PREFIX", "asr-temp/"),
 }
 
 STOPWORDS = {
@@ -200,6 +214,13 @@ class ModelSettingsRequest(BaseModel):
 
 class SpeechRequest(BaseModel):
     text: str
+    voice: str | None = None
+    language_type: str | None = None
+
+
+class AlignedAudioRequest(BaseModel):
+    refresh: bool = False
+    enable_words: bool = False
     voice: str | None = None
     language_type: str | None = None
 
@@ -389,6 +410,44 @@ def qwen_tts_config(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
             or (settings.get("qwen_tts_language_type") or "").strip()
             or QWEN_TTS_DEFAULTS["language_type"]
         ),
+    }
+
+
+def qwen_asr_config(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    settings = load_settings()
+    overrides = overrides or {}
+    qwen = provider_config("qwen", overrides)
+    dashscope_key = (
+        (overrides.get("dashscope_api_key") or "").strip()
+        or (settings.get("dashscope_api_key") or "").strip()
+        or (os.getenv("DASHSCOPE_API_KEY") or "").strip()
+    )
+    return {
+        "api_key": qwen["api_key"] or dashscope_key,
+        "api_key_env": f"{qwen['api_key_env']} / DASHSCOPE_API_KEY",
+        "base_url": normalize_dashscope_api_url(
+            (overrides.get("qwen_asr_base_url") or "").strip()
+            or settings.get("qwen_asr_base_url")
+            or QWEN_ASR_DEFAULTS["base_url"]
+        ),
+        "model": (
+            (overrides.get("qwen_asr_model") or "").strip()
+            or (settings.get("qwen_asr_model") or "").strip()
+            or QWEN_ASR_DEFAULTS["model"]
+        ),
+    }
+
+
+def oss_config() -> dict[str, str]:
+    prefix = os.getenv("OSS_TEMP_PREFIX", OSS_DEFAULTS["temp_prefix"]).strip() or "asr-temp/"
+    if prefix and not prefix.endswith("/"):
+        prefix += "/"
+    return {
+        "access_key_id": os.getenv("OSS_ACCESS_KEY_ID", "").strip(),
+        "access_key_secret": os.getenv("OSS_ACCESS_KEY_SECRET", "").strip(),
+        "bucket": os.getenv("OSS_BUCKET", OSS_DEFAULTS["bucket"]).strip(),
+        "endpoint": os.getenv("OSS_ENDPOINT", OSS_DEFAULTS["endpoint"]).strip(),
+        "temp_prefix": prefix,
     }
 
 
@@ -1319,6 +1378,291 @@ def concat_wav(wav1: bytes, wav2: bytes, silence_ms: int = 380) -> bytes:
     return out.getvalue()
 
 
+def concat_wav_many(chunks: list[bytes], silence_ms: int = 240) -> bytes:
+    if not chunks:
+        raise HTTPException(400, "没有可拼接的音频。")
+    if len(chunks) == 1:
+        return chunks[0]
+    pcm_parts: list[bytes] = []
+    rate = chans = width = 0
+    for i, chunk in enumerate(chunks):
+        with wave.open(io.BytesIO(chunk), "rb") as wav_file:
+            chunk_rate = wav_file.getframerate()
+            chunk_chans = wav_file.getnchannels()
+            chunk_width = wav_file.getsampwidth()
+            if i == 0:
+                rate, chans, width = chunk_rate, chunk_chans, chunk_width
+            elif (chunk_rate, chunk_chans, chunk_width) != (rate, chans, width):
+                raise HTTPException(502, "TTS 返回的音频格式不一致，无法拼接。")
+            pcm_parts.append(wav_file.readframes(wav_file.getnframes()))
+    silence = b"\x00" * (int(rate * silence_ms / 1000) * chans * width)
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wo:
+        wo.setnchannels(chans)
+        wo.setsampwidth(width)
+        wo.setframerate(rate)
+        wo.writeframes(silence.join(pcm_parts))
+    return out.getvalue()
+
+
+def speech_result_to_bytes(tts: dict[str, Any]) -> bytes:
+    if tts.get("audio_data"):
+        return base64.b64decode(tts["audio_data"])
+    if tts.get("audio_url"):
+        try:
+            r = requests.get(tts["audio_url"], timeout=60)
+            r.raise_for_status()
+        except requests.RequestException as exc:
+            raise HTTPException(502, f"下载 Qwen 朗读音频失败：{exc}") from exc
+        return r.content
+    raise HTTPException(502, "Qwen 未返回音频。")
+
+
+def listening_sentence_items(article: dict[str, Any]) -> list[dict[str, Any]]:
+    paragraphs = article.get("cleaned_paragraphs") or article.get("paragraphs") or []
+    items: list[dict[str, Any]] = []
+    for para_idx, paragraph in enumerate(paragraphs):
+        for sentence in split_sentences(paragraph):
+            items.append({"index": len(items), "para": para_idx, "text": sentence})
+    return items
+
+
+def chunk_sentences_for_tts(items: list[dict[str, Any]], max_chars: int = 1450) -> list[str]:
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for item in items:
+        sentence = clean_text(item["text"])
+        if not sentence:
+            continue
+        extra = len(sentence) + (1 if current else 0)
+        if current and current_len + extra > max_chars:
+            chunks.append(" ".join(current))
+            current = [sentence]
+            current_len = len(sentence)
+        else:
+            current.append(sentence)
+            current_len += extra
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
+
+
+def aligned_audio_cache_key(article_id: str, items: list[dict[str, Any]], voice: str, language_type: str, tts_model: str, asr_model: str) -> str:
+    text_hash = stable_id(*(item["text"] for item in items[:300]), str(len(items)))
+    payload = f"{article_id}|{text_hash}|{voice}|{language_type}|{tts_model}|{asr_model}|v1"
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def oss_bucket_client() -> tuple[Any, dict[str, str]]:
+    config = oss_config()
+    missing = [key for key in ("access_key_id", "access_key_secret", "bucket", "endpoint") if not config[key]]
+    if missing:
+        raise HTTPException(400, f"OSS 配置不完整，请检查：{', '.join(missing)}")
+    if oss2 is None:
+        raise HTTPException(500, "缺少 oss2 依赖，请重新安装 requirements.txt。")
+    auth = oss2.Auth(config["access_key_id"], config["access_key_secret"])
+    return oss2.Bucket(auth, config["endpoint"], config["bucket"]), config
+
+
+def upload_temp_audio_to_oss(audio_bytes: bytes, object_key: str, mime_type: str = "audio/wav", expires: int = 1800) -> tuple[Any, str]:
+    bucket, config = oss_bucket_client()
+    headers = {"Content-Type": mime_type}
+    try:
+        bucket.put_object(object_key, audio_bytes, headers=headers)
+        signed_url = bucket.sign_url("GET", object_key, expires)
+    except Exception as exc:
+        raise HTTPException(502, f"上传音频到 OSS 失败：{exc}") from exc
+    return bucket, signed_url
+
+
+def dashscope_asr_url(base_url: str) -> str:
+    return f"{normalize_dashscope_api_url(base_url)}/services/audio/asr/transcription"
+
+
+def dashscope_task_url(base_url: str, task_id: str) -> str:
+    return f"{normalize_dashscope_api_url(base_url)}/tasks/{task_id}"
+
+
+def start_qwen_filetranscription(audio_url: str, enable_words: bool = False) -> tuple[str, dict[str, Any]]:
+    config = qwen_asr_config()
+    if not config["api_key"]:
+        raise HTTPException(400, f"{config['api_key_env']} 未配置，无法调用 Qwen ASR。")
+    if config["model"].startswith("qwen3-asr-flash-filetrans"):
+        input_payload = {"file_url": audio_url}
+        parameters: dict[str, Any] = {
+            "channel_id": [0],
+            "enable_itn": False,
+            "enable_words": bool(enable_words),
+        }
+    else:
+        input_payload = {"file_urls": [audio_url]}
+        parameters = {
+            "language_hints": ["en"],
+        }
+        parameters["timestamp_alignment_enabled"] = True
+        if enable_words:
+            parameters["disfluency_removal_enabled"] = False
+    payload = {
+        "model": config["model"],
+        "input": input_payload,
+        "parameters": parameters,
+    }
+    try:
+        response = requests.post(
+            dashscope_asr_url(config["base_url"]),
+            headers={
+                "Authorization": f"Bearer {config['api_key']}",
+                "Content-Type": "application/json",
+                "X-DashScope-Async": "enable",
+            },
+            json=payload,
+            timeout=60,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(502, f"Qwen ASR 请求失败：{exc}") from exc
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HTTPException(response.status_code or 502, "Qwen ASR 返回了非 JSON 响应。") from exc
+    if response.status_code >= 400 or data.get("code"):
+        raise HTTPException(response.status_code or 502, data.get("message") or data.get("code") or "Qwen ASR 创建任务失败。")
+    task_id = ((data.get("output") or {}).get("task_id") or data.get("task_id") or "").strip()
+    if not task_id:
+        raise HTTPException(502, "Qwen ASR 没有返回 task_id。")
+    return task_id, {"provider": "qwen", "model": config["model"], "base_url": config["base_url"], "request_id": data.get("request_id")}
+
+
+def poll_qwen_asr_task(task_id: str, base_url: str, api_key: str, timeout_seconds: int = 180) -> dict[str, Any]:
+    deadline = time.time() + timeout_seconds
+    last_data: dict[str, Any] = {}
+    while time.time() < deadline:
+        try:
+            response = requests.get(
+                dashscope_task_url(base_url, task_id),
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=30,
+            )
+            data = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            raise HTTPException(502, f"查询 Qwen ASR 任务失败：{exc}") from exc
+        last_data = data
+        output = data.get("output") or {}
+        status = str(output.get("task_status") or data.get("task_status") or "").upper()
+        if status in {"SUCCEEDED", "SUCCESS"}:
+            return data
+        if status in {"FAILED", "CANCELED", "CANCELLED"}:
+            message = output.get("message") or data.get("message") or "Qwen ASR 任务失败。"
+            raise HTTPException(502, message)
+        time.sleep(2)
+    raise HTTPException(504, f"Qwen ASR 转写超时：{json.dumps(last_data, ensure_ascii=False)[:300]}")
+
+
+def fetch_qwen_transcription(task_result: dict[str, Any]) -> dict[str, Any]:
+    output = task_result.get("output") or {}
+    results = output.get("results") or []
+    transcription_url = ""
+    if results and isinstance(results[0], dict):
+        transcription_url = str(results[0].get("transcription_url") or "")
+    transcription_url = transcription_url or str(output.get("transcription_url") or "")
+    if not transcription_url:
+        raise HTTPException(502, "Qwen ASR 任务完成，但没有返回 transcription_url。")
+    try:
+        response = requests.get(transcription_url, timeout=60)
+        response.raise_for_status()
+        return response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise HTTPException(502, f"读取 Qwen ASR 转写结果失败：{exc}") from exc
+
+
+def _time_value(item: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str) and value.strip().replace(".", "", 1).isdigit():
+            return int(float(value))
+    return None
+
+
+def extract_asr_sentences(node: Any) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    if isinstance(node, dict):
+        sentences = node.get("sentences")
+        if isinstance(sentences, list):
+            for sentence in sentences:
+                if not isinstance(sentence, dict):
+                    continue
+                text = clean_text(str(sentence.get("text") or sentence.get("sentence") or ""))
+                begin = _time_value(sentence, "begin_time", "start_time", "begin", "start")
+                end = _time_value(sentence, "end_time", "finish_time", "end", "stop")
+                if text and begin is not None and end is not None and end > begin:
+                    found.append({
+                        "text": text,
+                        "begin_ms": begin,
+                        "end_ms": end,
+                        "words": sentence.get("words") if isinstance(sentence.get("words"), list) else [],
+                    })
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                found.extend(extract_asr_sentences(value))
+    elif isinstance(node, list):
+        for value in node:
+            found.extend(extract_asr_sentences(value))
+    deduped: list[dict[str, Any]] = []
+    seen = set()
+    for sentence in sorted(found, key=lambda item: (item["begin_ms"], item["end_ms"])):
+        key = (sentence["begin_ms"], sentence["end_ms"], sentence["text"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(sentence)
+    return deduped
+
+
+def normalize_for_alignment(text: str) -> str:
+    text = clean_text(text).lower()
+    text = re.sub(r"[^a-z0-9'\s]", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def align_asr_to_original(items: list[dict[str, Any]], asr_sentences: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    alignments: list[dict[str, Any]] = []
+    j = 0
+    for item in items:
+        original_norm = normalize_for_alignment(item["text"])
+        best: tuple[float, int, str] | None = None
+        for end_idx in range(j, min(len(asr_sentences), j + 4)):
+            combined = " ".join(s["text"] for s in asr_sentences[j:end_idx + 1])
+            score = difflib.SequenceMatcher(None, original_norm, normalize_for_alignment(combined)).ratio()
+            if best is None or score > best[0]:
+                best = (score, end_idx, combined)
+        if best and j < len(asr_sentences):
+            score, end_idx, asr_text = best
+            begin_ms = asr_sentences[j]["begin_ms"]
+            end_ms = asr_sentences[end_idx]["end_ms"]
+            words_out = []
+            for sent in asr_sentences[j:end_idx + 1]:
+                for word in sent.get("words") or []:
+                    if isinstance(word, dict):
+                        words_out.append(word)
+            j = end_idx + 1
+        else:
+            score, asr_text, begin_ms, end_ms, words_out = 0.0, "", None, None, []
+        alignments.append({
+            "index": item["index"],
+            "para": item["para"],
+            "text": item["text"],
+            "asr_text": asr_text,
+            "begin_ms": begin_ms,
+            "end_ms": end_ms,
+            "confidence": round(score, 3),
+            "words": words_out,
+        })
+    return alignments
+
+
 def writing_feedback_fallback(task: str, content: str, article: dict[str, Any]) -> dict[str, Any]:
     article_terms = [item["term"] for item in article["stats"].get("top_terms", [])[:8]]
     used = [t for t in article_terms if re.search(rf"\b{re.escape(t)}\b", content, re.I)]
@@ -1891,11 +2235,94 @@ def listening_sentences(article_id: str) -> dict[str, Any]:
     paragraphs = article.get("cleaned_paragraphs") or article.get("paragraphs") or []
     if not paragraphs:
         raise HTTPException(400, "文章暂无可用文本，请先完成文本检查。")
-    items: list[dict[str, Any]] = []
-    for para_idx, paragraph in enumerate(paragraphs):
-        for sentence in split_sentences(paragraph):
-            items.append({"index": len(items), "para": para_idx, "text": sentence})
+    items = listening_sentence_items(article)
     return {"article_id": article_id, "title": article.get("title", ""), "sentences": items}
+
+
+@app.post("/api/articles/{article_id}/listening/aligned-audio")
+def listening_aligned_audio(article_id: str, request: AlignedAudioRequest) -> dict[str, Any]:
+    article = find_article(article_id)
+    paragraphs = article.get("cleaned_paragraphs") or article.get("paragraphs") or []
+    if not paragraphs:
+        raise HTTPException(400, "文章暂无可用文本，请先完成文本检查。")
+    settings = load_settings()
+    provider = task_provider("audio", settings=settings)
+    if provider != "qwen":
+        raise HTTPException(400, "整篇时间轴音频需要 Qwen TTS 和 Qwen ASR。")
+
+    items = listening_sentence_items(article)
+    if not items:
+        raise HTTPException(400, "无法切分出句子。")
+
+    tts_config = qwen_tts_config()
+    asr_config = qwen_asr_config()
+    voice = (request.voice or tts_config["voice"]).strip() or "Ethan"
+    language_type = (request.language_type or tts_config["language_type"]).strip() or "English"
+    key = aligned_audio_cache_key(article_id, items, voice, language_type, tts_config["model"], asr_config["model"])
+    audio_url = f"/audio/{key}.wav"
+    audio_path = AUDIO_CACHE_DIR / f"{key}.wav"
+    align_path = AUDIO_CACHE_DIR / f"{key}.align.json"
+    if not request.refresh and audio_path.exists() and align_path.exists():
+        cached = load_json(align_path, {})
+        if cached.get("alignments"):
+            return {
+                "article_id": article_id,
+                "title": article.get("title", ""),
+                "audio_url": audio_url,
+                "cached": True,
+                **cached,
+            }
+
+    chunks = chunk_sentences_for_tts(items)
+    if not chunks:
+        raise HTTPException(400, "没有可朗读的文本。")
+    wav_chunks: list[bytes] = []
+    for chunk in chunks:
+        tts = synthesize_qwen_speech(chunk, voice, language_type)
+        audio_bytes = speech_result_to_bytes(tts)
+        if audio_bytes[:4] != b"RIFF":
+            raise HTTPException(502, "当前 TTS 返回的不是 WAV 音频，无法拼接整篇音频。")
+        wav_chunks.append(audio_bytes)
+    audio_bytes = concat_wav_many(wav_chunks)
+    AUDIO_CACHE_DIR.mkdir(exist_ok=True)
+    audio_path.write_bytes(audio_bytes)
+
+    object_key = f"{oss_config()['temp_prefix']}{key}.wav"
+    bucket = None
+    try:
+        bucket, signed_url = upload_temp_audio_to_oss(audio_bytes, object_key)
+        task_id, meta = start_qwen_filetranscription(signed_url, enable_words=request.enable_words)
+        task_result = poll_qwen_asr_task(task_id, asr_config["base_url"], asr_config["api_key"])
+        transcript = fetch_qwen_transcription(task_result)
+    finally:
+        if bucket is not None:
+            try:
+                bucket.delete_object(object_key)
+            except Exception:
+                pass
+
+    asr_sentences = extract_asr_sentences(transcript)
+    if not asr_sentences:
+        raise HTTPException(502, "Qwen ASR 没有返回可用的句级时间戳。")
+    alignments = align_asr_to_original(items, asr_sentences)
+    payload = {
+        "alignments": alignments,
+        "asr_sentences": asr_sentences,
+        "meta": {
+            **meta,
+            "task_id": task_id,
+            "chunks": len(chunks),
+            "enable_words": request.enable_words,
+        },
+    }
+    save_json(align_path, payload)
+    return {
+        "article_id": article_id,
+        "title": article.get("title", ""),
+        "audio_url": audio_url,
+        "cached": False,
+        **payload,
+    }
 
 
 @app.post("/api/articles/{article_id}/listening/prepare")
@@ -1904,10 +2331,7 @@ def listening_prepare(article_id: str) -> dict[str, Any]:
     paragraphs = article.get("cleaned_paragraphs") or article.get("paragraphs") or []
     if not paragraphs:
         raise HTTPException(400, "文章暂无可用文本，请先完成文本检查。")
-    items: list[dict[str, Any]] = []
-    for para_idx, paragraph in enumerate(paragraphs):
-        for sentence in split_sentences(paragraph):
-            items.append({"para": para_idx, "text": sentence})
+    items = listening_sentence_items(article)
     if not items:
         raise HTTPException(400, "无法切分出句子。")
 
