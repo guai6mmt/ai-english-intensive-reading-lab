@@ -1443,6 +1443,19 @@ function fillSettingsForm() {
   $("deepseekKeyInput").placeholder = deepseek.api_key_masked || "留空则使用环境变量";
   $("qwenKeyInput").placeholder = qwen.api_key_masked || "留空则使用环境变量";
 
+  const qwenAsr = qwen.asr || {};
+  $("qwenAsrBaseInput").value = qwenAsr.base_url || "https://dashscope.aliyuncs.com/api/v1";
+  $("qwenAsrModelInput").value = qwenAsr.model || "qwen3-asr-flash-filetrans";
+  $("dashscopeKeyInput").placeholder = qwen.dashscope_api_key_masked || "留空则使用环境变量";
+
+  const oss = state.settings.oss || state.config.oss || {};
+  $("ossBucketInput").value = oss.bucket || "";
+  $("ossEndpointInput").value = oss.endpoint || "";
+  $("ossPrefixInput").value = oss.temp_prefix || "asr-temp/";
+  $("ossKeyIdInput").placeholder = oss.access_key_id_masked || "留空则使用环境变量";
+  $("ossKeySecretInput").placeholder = oss.access_key_secret_masked || "留空则使用环境变量";
+  $("ossStatusText").textContent = oss.configured ? "OSS 已配置" : "OSS 未配置（整篇音频对齐将不可用）";
+
   const stats = state.summary || {};
   $("globalStats").innerHTML = `
     <div><strong>${formatNumber(stats.source_count)}</strong><span>文件</span></div>
@@ -1479,6 +1492,14 @@ function settingsPayload() {
     qwen_tts_model: $("qwenTtsModelInput").value,
     qwen_tts_voice: $("qwenTtsVoiceInput").value,
     qwen_tts_language_type: $("qwenTtsLanguageInput").value,
+    dashscope_api_key: $("dashscopeKeyInput").value,
+    qwen_asr_base_url: $("qwenAsrBaseInput").value,
+    qwen_asr_model: $("qwenAsrModelInput").value,
+    oss_access_key_id: $("ossKeyIdInput").value,
+    oss_access_key_secret: $("ossKeySecretInput").value,
+    oss_bucket: $("ossBucketInput").value,
+    oss_endpoint: $("ossEndpointInput").value,
+    oss_temp_prefix: $("ossPrefixInput").value,
   };
 }
 
@@ -1660,6 +1681,9 @@ document.addEventListener("click", async (event) => {
       });
       $("deepseekKeyInput").value = "";
       $("qwenKeyInput").value = "";
+      $("dashscopeKeyInput").value = "";
+      $("ossKeyIdInput").value = "";
+      $("ossKeySecretInput").value = "";
       saveTweaks();
       applyTweaks();
       await refreshAll();

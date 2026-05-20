@@ -210,6 +210,14 @@ class ModelSettingsRequest(BaseModel):
     qwen_tts_model: str | None = None
     qwen_tts_voice: str | None = None
     qwen_tts_language_type: str | None = None
+    dashscope_api_key: str | None = None
+    qwen_asr_base_url: str | None = None
+    qwen_asr_model: str | None = None
+    oss_access_key_id: str | None = None
+    oss_access_key_secret: str | None = None
+    oss_bucket: str | None = None
+    oss_endpoint: str | None = None
+    oss_temp_prefix: str | None = None
 
 
 class SpeechRequest(BaseModel):
@@ -439,14 +447,22 @@ def qwen_asr_config(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def oss_config() -> dict[str, str]:
-    prefix = os.getenv("OSS_TEMP_PREFIX", OSS_DEFAULTS["temp_prefix"]).strip() or "asr-temp/"
+    settings = load_settings()
+
+    def pick(key: str, env: str, fallback: str = "") -> str:
+        value = (settings.get(key) or "").strip()
+        if value:
+            return value
+        return (os.getenv(env, fallback) or "").strip()
+
+    prefix = pick("oss_temp_prefix", "OSS_TEMP_PREFIX", OSS_DEFAULTS["temp_prefix"]) or "asr-temp/"
     if prefix and not prefix.endswith("/"):
         prefix += "/"
     return {
-        "access_key_id": os.getenv("OSS_ACCESS_KEY_ID", "").strip(),
-        "access_key_secret": os.getenv("OSS_ACCESS_KEY_SECRET", "").strip(),
-        "bucket": os.getenv("OSS_BUCKET", OSS_DEFAULTS["bucket"]).strip(),
-        "endpoint": os.getenv("OSS_ENDPOINT", OSS_DEFAULTS["endpoint"]).strip(),
+        "access_key_id": pick("oss_access_key_id", "OSS_ACCESS_KEY_ID"),
+        "access_key_secret": pick("oss_access_key_secret", "OSS_ACCESS_KEY_SECRET"),
+        "bucket": pick("oss_bucket", "OSS_BUCKET", OSS_DEFAULTS["bucket"]),
+        "endpoint": pick("oss_endpoint", "OSS_ENDPOINT", OSS_DEFAULTS["endpoint"]),
         "temp_prefix": prefix,
     }
 
@@ -1781,7 +1797,12 @@ def provider_public_config(name: str) -> dict[str, Any]:
     }
     if name == "qwen":
         tts = qwen_tts_config()
+        asr = qwen_asr_config()
         settings = load_settings()
+        dashscope_key = (
+            (settings.get("dashscope_api_key") or "").strip()
+            or (os.getenv("DASHSCOPE_API_KEY") or "").strip()
+        )
         result["image_model"] = settings.get("qwen_image_model", "qwen-vl-plus")
         result["tts"] = {
             "configured": bool(tts["api_key"]),
@@ -1790,6 +1811,12 @@ def provider_public_config(name: str) -> dict[str, Any]:
             "language_type": tts["language_type"],
             "base_url": tts["base_url"],
         }
+        result["asr"] = {
+            "configured": bool(asr["api_key"]),
+            "model": asr["model"],
+            "base_url": asr["base_url"],
+        }
+        result["dashscope_api_key_masked"] = mask_secret(dashscope_key)
     return result
 
 
@@ -1807,6 +1834,21 @@ def settings_response() -> dict[str, Any]:
             "audio": audio,
         },
         "providers": {name: provider_public_config(name) for name in AI_PROVIDERS},
+        "oss": oss_public_config(),
+    }
+
+
+def oss_public_config() -> dict[str, Any]:
+    config = oss_config()
+    return {
+        "configured": bool(
+            config["access_key_id"] and config["access_key_secret"] and config["bucket"] and config["endpoint"]
+        ),
+        "endpoint": config["endpoint"],
+        "bucket": config["bucket"],
+        "temp_prefix": config["temp_prefix"],
+        "access_key_id_masked": mask_secret(config["access_key_id"]),
+        "access_key_secret_masked": mask_secret(config["access_key_secret"]),
     }
 
 
@@ -1834,8 +1876,15 @@ def update_settings(request: ModelSettingsRequest) -> dict[str, Any]:
             continue
         if key.endswith("_api_key") and not value:
             continue
+        if key in {"oss_access_key_id", "oss_access_key_secret"} and not value:
+            continue
         if key.endswith("_base_url") and value:
-            value = normalize_dashscope_api_url(value) if key == "qwen_tts_base_url" else normalize_base_url(value)
+            if key in {"qwen_tts_base_url", "qwen_asr_base_url"}:
+                value = normalize_dashscope_api_url(value)
+            else:
+                value = normalize_base_url(value)
+        if key == "oss_temp_prefix" and value and not value.endswith("/"):
+            value = value + "/"
         if value:
             settings[key] = value
         elif key in settings:
