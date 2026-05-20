@@ -11,7 +11,7 @@
       href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=Inter:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/listen.css?v=20260520-v2" />
+    <link rel="stylesheet" href="/static/listen.css?v=20260520-v3" />
   </head>
   <body>
     <div class="lp" id="lpRoot">
@@ -58,6 +58,17 @@
 
       <!-- ── Bottom control bar ── -->
       <footer class="lp-controls">
+        <div class="lp-prepare" id="lpPrepare" hidden>
+          <div class="lp-prepare-head">
+            <span class="lp-prepare-stage" id="lpPrepareStage">准备整篇音频…</span>
+            <span class="lp-prepare-meta">
+              <span class="lp-prepare-elapsed" id="lpPrepareElapsed">00:00</span>
+              <span class="lp-prepare-pct" id="lpPreparePct">0%</span>
+            </span>
+          </div>
+          <div class="lp-prepare-bar"><div class="lp-prepare-fill" id="lpPrepareFill"></div></div>
+          <div class="lp-prepare-msg" id="lpPrepareMsg">等待开始…</div>
+        </div>
         <div class="lp-progress-wrap">
           <div class="lp-progress-bar" id="lpProgressBar">
             <div class="lp-progress-fill" id="lpProgressFill"></div>
@@ -78,6 +89,6 @@
       </footer>
 
     </div>
-    <script src="/static/listen.js?v=20260520-v3"></script>
+    <script src="/static/listen.js?v=20260520-v4"></script>
   </body>
 </html>

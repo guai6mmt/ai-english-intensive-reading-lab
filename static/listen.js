@@ -456,41 +456,137 @@ async function phase2() {
   }
 }
 
-// ── Phase 3 ── precise whole-article audio timeline
+// ── Phase 3 ── precise whole-article audio timeline (with progress)
+const STAGE_LABELS = {
+  pending:     "排队中",
+  prep:        "准备文本",
+  tts:         "合成语音",
+  concat:      "拼接音频",
+  oss_upload:  "上传到 OSS",
+  asr_submit:  "提交 ASR",
+  asr_polling: "OSS 内容解析中",
+  asr_fetch:   "拉取转写",
+  align:       "对齐原文",
+  cleanup:     "清理临时文件",
+  ready:       "时间轴已就绪",
+  failed:      "准备失败",
+};
+
+function showPrepare() {
+  const el = $("lpPrepare");
+  if (el) { el.hidden = false; el.classList.remove("done", "failed"); }
+}
+function setPrepareStage(stage, pct, msg) {
+  const stageEl = $("lpPrepareStage");
+  const msgEl   = $("lpPrepareMsg");
+  const pctEl   = $("lpPreparePct");
+  const fill    = $("lpPrepareFill");
+  if (stageEl) stageEl.textContent = STAGE_LABELS[stage] || stage || "处理中";
+  if (msgEl)   msgEl.textContent   = msg || "";
+  if (pctEl)   pctEl.textContent   = `${pct ?? 0}%`;
+  if (fill)    fill.style.right    = `${Math.max(0, 100 - (pct || 0))}%`;
+}
+function setPrepareElapsed(seconds) {
+  const el = $("lpPrepareElapsed");
+  if (!el) return;
+  const mm = String(Math.floor(seconds / 60)).padStart(2, "0");
+  const ss = String(seconds % 60).padStart(2, "0");
+  el.textContent = `${mm}:${ss}`;
+}
+function markPrepareDone() {
+  const el = $("lpPrepare");
+  if (!el) return;
+  el.classList.add("done");
+  setTimeout(() => { el.hidden = true; }, 2500);
+}
+function markPrepareFailed(msg) {
+  const el = $("lpPrepare");
+  if (!el) return;
+  el.classList.add("failed");
+  setPrepareStage("failed", 0, msg || "准备失败");
+}
+
+function applyAlignedResult(data) {
+  state.alignedAudioUrl = data.audio_url;
+  const byIdx = new Map((data.alignments || []).map((s) => [s.index, s]));
+  for (const s of state.sentences) {
+    const aligned = byIdx.get(s.index);
+    if (!aligned) continue;
+    s.begin_ms = Number(aligned.begin_ms);
+    s.end_ms = Number(aligned.end_ms);
+    s.asr_text = aligned.asr_text;
+    s.align_confidence = aligned.confidence;
+    s.words = aligned.words || [];
+  }
+  state.alignedReady = true;
+  state.alignedFailed = false;
+  ensureAlignedAudio();
+}
+
 async function phaseAlignedAudio() {
   if (state.alignedLoading || state.alignedReady) return;
   state.alignedLoading = true;
-  const previousSub = $("lpSub")?.textContent || "";
-  if (!state.isPlaying) setSub(`${previousSub || `共 ${state.sentences.length} 句`} · 正在生成精准时间轴`);
+  showPrepare();
+  setPrepareStage("pending", 0, "请求开始…");
+
+  let startedAt = Date.now();
+  const tickElapsed = () => setPrepareElapsed(Math.floor((Date.now() - startedAt) / 1000));
+  const elapsedTimer = setInterval(tickElapsed, 1000);
+  tickElapsed();
+
   try {
-    const data = await api(
-      `/api/articles/${encodeURIComponent(state.articleId)}/listening/aligned-audio`,
+    const startData = await api(
+      `/api/articles/${encodeURIComponent(state.articleId)}/listening/aligned-audio/start`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enable_words: false }),
       }
     );
-    state.alignedAudioUrl = data.audio_url;
-    const byIdx = new Map((data.alignments || []).map((s) => [s.index, s]));
-    for (const s of state.sentences) {
-      const aligned = byIdx.get(s.index);
-      if (!aligned) continue;
-      s.begin_ms = Number(aligned.begin_ms);
-      s.end_ms = Number(aligned.end_ms);
-      s.asr_text = aligned.asr_text;
-      s.align_confidence = aligned.confidence;
-      s.words = aligned.words || [];
+
+    // Cache hit → no polling needed
+    if (startData.cached && startData.result) {
+      applyAlignedResult(startData.result);
+      setPrepareStage("ready", 100, "命中缓存,无需重新生成");
+      markPrepareDone();
+      return;
     }
-    state.alignedReady = true;
-    state.alignedFailed = false;
-    ensureAlignedAudio();
-    if (!state.isPlaying) setSub(`共 ${state.sentences.length} 句 · 精准时间轴已就绪`);
+
+    const taskId = startData.task_id;
+    if (!taskId) throw new Error("后端未返回 task_id");
+
+    // Poll status until done
+    while (true) {
+      await new Promise((r) => setTimeout(r, 1500));
+      let status;
+      try {
+        status = await api(
+          `/api/articles/${encodeURIComponent(state.articleId)}/listening/aligned-audio/status/${encodeURIComponent(taskId)}`
+        );
+      } catch (err) {
+        // transient network/404 — give up after a few retries
+        throw err;
+      }
+      if (status.started_at) startedAt = status.started_at * 1000;
+      setPrepareStage(status.stage, status.pct, status.msg);
+      if (status.error) {
+        markPrepareFailed(status.error);
+        state.alignedFailed = true;
+        return;
+      }
+      if (status.result) {
+        applyAlignedResult(status.result);
+        setPrepareStage("ready", 100, "时间轴已就绪");
+        markPrepareDone();
+        return;
+      }
+    }
   } catch (err) {
     state.alignedFailed = true;
     console.warn("Aligned audio failed:", err);
-    if (!state.isPlaying) setSub(previousSub || `共 ${state.sentences.length} 句`);
+    markPrepareFailed(err.message || "准备失败");
   } finally {
+    clearInterval(elapsedTimer);
     state.alignedLoading = false;
   }
 }

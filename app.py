@@ -13,6 +13,7 @@ import re
 import requests
 import shutil
 import struct
+import threading
 import time
 import uuid
 import wave
@@ -239,6 +240,90 @@ class DictationItemsRequest(BaseModel):
 
 class NotesRequest(BaseModel):
     notes: str
+
+
+# ───────── Background job manager (in-memory) ─────────
+_JOBS_LOCK = threading.Lock()
+_JOBS: dict[str, dict[str, Any]] = {}
+_JOB_TTL_SECONDS = 600  # finished jobs survive 10 min for late polls
+
+
+def _expire_old_jobs(now: float) -> None:
+    stale = [tid for tid, job in _JOBS.items()
+             if job.get("finished_at") and now - job["finished_at"] > _JOB_TTL_SECONDS]
+    for tid in stale:
+        _JOBS.pop(tid, None)
+
+
+def create_job(kind: str, key: str = "") -> str:
+    task_id = uuid.uuid4().hex
+    now = time.time()
+    with _JOBS_LOCK:
+        _expire_old_jobs(now)
+        _JOBS[task_id] = {
+            "task_id": task_id,
+            "kind": kind,
+            "key": key,
+            "stage": "pending",
+            "pct": 0,
+            "msg": "排队中…",
+            "started_at": now,
+            "updated_at": now,
+            "finished_at": None,
+            "result": None,
+            "error": None,
+            "extra": {},
+        }
+    return task_id
+
+
+def update_job(task_id: str, stage: str | None = None, pct: int | None = None,
+               msg: str | None = None, extra: dict[str, Any] | None = None) -> None:
+    with _JOBS_LOCK:
+        job = _JOBS.get(task_id)
+        if not job:
+            return
+        if stage is not None:
+            job["stage"] = stage
+        if pct is not None:
+            job["pct"] = max(0, min(100, int(pct)))
+        if msg is not None:
+            job["msg"] = msg
+        if extra:
+            job["extra"].update(extra)
+        job["updated_at"] = time.time()
+
+
+def finish_job(task_id: str, result: Any = None, error: str | None = None) -> None:
+    with _JOBS_LOCK:
+        job = _JOBS.get(task_id)
+        if not job:
+            return
+        job["finished_at"] = time.time()
+        job["updated_at"] = job["finished_at"]
+        if error:
+            job["error"] = error
+            job["stage"] = "failed"
+        else:
+            job["result"] = result
+            job["stage"] = "ready"
+            job["pct"] = 100
+            job["msg"] = "时间轴已就绪"
+
+
+def get_job(task_id: str) -> dict[str, Any] | None:
+    with _JOBS_LOCK:
+        job = _JOBS.get(task_id)
+        return dict(job) if job else None
+
+
+def find_job_by_key(kind: str, key: str) -> dict[str, Any] | None:
+    """Return the most recent unfinished job with matching kind+key, if any."""
+    with _JOBS_LOCK:
+        for job in _JOBS.values():
+            if job["kind"] == kind and job["key"] == key and job.get("finished_at") is None:
+                return dict(job)
+    return None
 
 
 def ensure_dirs() -> None:
@@ -1549,8 +1634,15 @@ def start_qwen_filetranscription(audio_url: str, enable_words: bool = False) -> 
     return task_id, {"provider": "qwen", "model": config["model"], "base_url": config["base_url"], "request_id": data.get("request_id")}
 
 
-def poll_qwen_asr_task(task_id: str, base_url: str, api_key: str, timeout_seconds: int = 180) -> dict[str, Any]:
-    deadline = time.time() + timeout_seconds
+def poll_qwen_asr_task(
+    task_id: str,
+    base_url: str,
+    api_key: str,
+    timeout_seconds: int = 180,
+    on_tick: Callable[[int, str], None] | None = None,
+) -> dict[str, Any]:
+    started = time.time()
+    deadline = started + timeout_seconds
     last_data: dict[str, Any] = {}
     while time.time() < deadline:
         try:
@@ -1570,6 +1662,11 @@ def poll_qwen_asr_task(task_id: str, base_url: str, api_key: str, timeout_second
         if status in {"FAILED", "CANCELED", "CANCELLED"}:
             message = output.get("message") or data.get("message") or "Qwen ASR 任务失败。"
             raise HTTPException(502, message)
+        if on_tick is not None:
+            try:
+                on_tick(int(time.time() - started), status or "PENDING")
+            except Exception:
+                pass
         time.sleep(2)
     raise HTTPException(504, f"Qwen ASR 转写超时：{json.dumps(last_data, ensure_ascii=False)[:300]}")
 
@@ -2288,8 +2385,14 @@ def listening_sentences(article_id: str) -> dict[str, Any]:
     return {"article_id": article_id, "title": article.get("title", ""), "sentences": items}
 
 
-@app.post("/api/articles/{article_id}/listening/aligned-audio")
-def listening_aligned_audio(article_id: str, request: AlignedAudioRequest) -> dict[str, Any]:
+class PipelineError(Exception):
+    """Friendly error raised inside the aligned-audio pipeline; surfaced to the user."""
+
+
+def _aligned_audio_prepare(
+    article_id: str, request: AlignedAudioRequest
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], dict[str, Any], str, str, str, Path, Path, str]:
+    """Common validation: article, items, configs, cache key. Returns context."""
     article = find_article(article_id)
     paragraphs = article.get("cleaned_paragraphs") or article.get("paragraphs") or []
     if not paragraphs:
@@ -2298,11 +2401,9 @@ def listening_aligned_audio(article_id: str, request: AlignedAudioRequest) -> di
     provider = task_provider("audio", settings=settings)
     if provider != "qwen":
         raise HTTPException(400, "整篇时间轴音频需要 Qwen TTS 和 Qwen ASR。")
-
     items = listening_sentence_items(article)
     if not items:
         raise HTTPException(400, "无法切分出句子。")
-
     tts_config = qwen_tts_config()
     asr_config = qwen_asr_config()
     voice = (request.voice or tts_config["voice"]).strip() or "Ethan"
@@ -2311,37 +2412,89 @@ def listening_aligned_audio(article_id: str, request: AlignedAudioRequest) -> di
     audio_url = f"/audio/{key}.wav"
     audio_path = AUDIO_CACHE_DIR / f"{key}.wav"
     align_path = AUDIO_CACHE_DIR / f"{key}.align.json"
-    if not request.refresh and audio_path.exists() and align_path.exists():
-        cached = load_json(align_path, {})
-        if cached.get("alignments"):
-            return {
-                "article_id": article_id,
-                "title": article.get("title", ""),
-                "audio_url": audio_url,
-                "cached": True,
-                **cached,
-            }
+    return article, items, tts_config, asr_config, voice, language_type, key, audio_path, align_path, audio_url
 
+
+def _cached_aligned_audio_payload(
+    article: dict[str, Any], article_id: str, audio_url: str, align_path: Path
+) -> dict[str, Any] | None:
+    cached = load_json(align_path, {})
+    if not cached.get("alignments"):
+        return None
+    return {
+        "article_id": article_id,
+        "title": article.get("title", ""),
+        "audio_url": audio_url,
+        "cached": True,
+        **cached,
+    }
+
+
+def _run_aligned_audio_pipeline(
+    article: dict[str, Any],
+    items: list[dict[str, Any]],
+    tts_config: dict[str, Any],
+    asr_config: dict[str, Any],
+    voice: str,
+    language_type: str,
+    key: str,
+    audio_path: Path,
+    align_path: Path,
+    audio_url: str,
+    enable_words: bool,
+    progress_cb: Callable[[str, int, str], None],
+) -> dict[str, Any]:
+    progress_cb("prep", 2, "准备文本分段…")
     chunks = chunk_sentences_for_tts(items)
     if not chunks:
-        raise HTTPException(400, "没有可朗读的文本。")
+        raise PipelineError("没有可朗读的文本。")
+
     wav_chunks: list[bytes] = []
-    for chunk in chunks:
+    total_chunks = len(chunks)
+    for i, chunk in enumerate(chunks):
+        pct = 5 + int(35 * i / max(1, total_chunks))
+        progress_cb("tts", pct, f"合成语音 {i + 1}/{total_chunks} 段…")
         tts = synthesize_qwen_speech(chunk, voice, language_type)
-        audio_bytes = speech_result_to_bytes(tts)
-        if audio_bytes[:4] != b"RIFF":
-            raise HTTPException(502, "当前 TTS 返回的不是 WAV 音频，无法拼接整篇音频。")
-        wav_chunks.append(audio_bytes)
+        audio_bytes_chunk = speech_result_to_bytes(tts)
+        if audio_bytes_chunk[:4] != b"RIFF":
+            raise PipelineError("当前 TTS 返回的不是 WAV 音频，无法拼接整篇音频。")
+        wav_chunks.append(audio_bytes_chunk)
+
+    progress_cb("concat", 42, "拼接并写入音频文件…")
     audio_bytes = concat_wav_many(wav_chunks)
     AUDIO_CACHE_DIR.mkdir(exist_ok=True)
     audio_path.write_bytes(audio_bytes)
 
-    object_key = f"{oss_config()['temp_prefix']}{key}.wav"
+    oss = oss_config()
+    if not (oss["access_key_id"] and oss["access_key_secret"] and oss["bucket"] and oss["endpoint"]):
+        raise PipelineError("OSS 未配置，无法上传音频做精准对齐。请在设置中填入 OSS Access Key ID/Secret/Bucket/Endpoint。")
+    object_key = f"{oss['temp_prefix']}{key}.wav"
+
     bucket = None
+    asr_task_id = ""
     try:
+        progress_cb("oss_upload", 45, f"上传音频到 OSS ({oss['bucket']})…")
         bucket, signed_url = upload_temp_audio_to_oss(audio_bytes, object_key)
-        task_id, meta = start_qwen_filetranscription(signed_url, enable_words=request.enable_words)
-        task_result = poll_qwen_asr_task(task_id, asr_config["base_url"], asr_config["api_key"])
+
+        progress_cb("asr_submit", 55, "提交 ASR 解析任务…")
+        asr_task_id, meta = start_qwen_filetranscription(signed_url, enable_words=enable_words)
+
+        def _asr_tick(elapsed: int, status: str) -> None:
+            pct = 60 + min(28, int(elapsed / 180 * 28))
+            mm, ss = divmod(elapsed, 60)
+            short_id = asr_task_id[:12] + "…" if len(asr_task_id) > 12 else asr_task_id
+            progress_cb(
+                "asr_polling",
+                pct,
+                f"OSS 内容解析中…(已等待 {mm:02d}:{ss:02d}, {status}, 任务 {short_id})",
+            )
+
+        _asr_tick(0, "PENDING")
+        task_result = poll_qwen_asr_task(
+            asr_task_id, asr_config["base_url"], asr_config["api_key"], on_tick=_asr_tick
+        )
+
+        progress_cb("asr_fetch", 90, "拉取转写结果…")
         transcript = fetch_qwen_transcription(task_result)
     finally:
         if bucket is not None:
@@ -2352,26 +2505,114 @@ def listening_aligned_audio(article_id: str, request: AlignedAudioRequest) -> di
 
     asr_sentences = extract_asr_sentences(transcript)
     if not asr_sentences:
-        raise HTTPException(502, "Qwen ASR 没有返回可用的句级时间戳。")
+        raise PipelineError("Qwen ASR 没有返回可用的句级时间戳。")
+
+    progress_cb("align", 95, "对齐原文句子…")
     alignments = align_asr_to_original(items, asr_sentences)
     payload = {
         "alignments": alignments,
         "asr_sentences": asr_sentences,
         "meta": {
             **meta,
-            "task_id": task_id,
+            "task_id": asr_task_id,
             "chunks": len(chunks),
-            "enable_words": request.enable_words,
+            "enable_words": enable_words,
         },
     }
+
+    progress_cb("cleanup", 98, "保存缓存…")
     save_json(align_path, payload)
+
     return {
-        "article_id": article_id,
+        "article_id": article["id"] if "id" in article else "",
         "title": article.get("title", ""),
         "audio_url": audio_url,
         "cached": False,
         **payload,
     }
+
+
+@app.post("/api/articles/{article_id}/listening/aligned-audio")
+def listening_aligned_audio(article_id: str, request: AlignedAudioRequest) -> dict[str, Any]:
+    article, items, tts_config, asr_config, voice, language_type, key, audio_path, align_path, audio_url = (
+        _aligned_audio_prepare(article_id, request)
+    )
+    if not request.refresh and audio_path.exists() and align_path.exists():
+        cached = _cached_aligned_audio_payload(article, article_id, audio_url, align_path)
+        if cached:
+            return cached
+    try:
+        result = _run_aligned_audio_pipeline(
+            article, items, tts_config, asr_config, voice, language_type,
+            key, audio_path, align_path, audio_url,
+            enable_words=request.enable_words,
+            progress_cb=lambda *_args, **_kw: None,
+        )
+    except PipelineError as exc:
+        raise HTTPException(400, str(exc))
+    result["article_id"] = article_id
+    return result
+
+
+@app.post("/api/articles/{article_id}/listening/aligned-audio/start")
+def listening_aligned_audio_start(article_id: str, request: AlignedAudioRequest) -> dict[str, Any]:
+    article, items, tts_config, asr_config, voice, language_type, key, audio_path, align_path, audio_url = (
+        _aligned_audio_prepare(article_id, request)
+    )
+    if not request.refresh and audio_path.exists() and align_path.exists():
+        cached = _cached_aligned_audio_payload(article, article_id, audio_url, align_path)
+        if cached:
+            return {"cached": True, "result": cached}
+
+    existing = find_job_by_key("aligned_audio", key)
+    if existing:
+        return {"cached": False, "task_id": existing["task_id"], "reused": True}
+
+    task_id = create_job("aligned_audio", key=key)
+
+    def _worker() -> None:
+        def cb(stage: str, pct: int, msg: str) -> None:
+            update_job(task_id, stage=stage, pct=pct, msg=msg)
+        try:
+            result = _run_aligned_audio_pipeline(
+                article, items, tts_config, asr_config, voice, language_type,
+                key, audio_path, align_path, audio_url,
+                enable_words=request.enable_words,
+                progress_cb=cb,
+            )
+            result["article_id"] = article_id
+            finish_job(task_id, result=result)
+        except PipelineError as exc:
+            finish_job(task_id, error=str(exc))
+        except HTTPException as exc:
+            finish_job(task_id, error=str(exc.detail))
+        except Exception as exc:  # noqa: BLE001
+            finish_job(task_id, error=f"内部错误：{exc}")
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"cached": False, "task_id": task_id, "reused": False}
+
+
+@app.get("/api/articles/{article_id}/listening/aligned-audio/status/{task_id}")
+def listening_aligned_audio_status(article_id: str, task_id: str) -> dict[str, Any]:
+    job = get_job(task_id)
+    if not job:
+        raise HTTPException(404, "任务不存在或已过期，请重新发起。")
+    out = {
+        "task_id": task_id,
+        "stage": job["stage"],
+        "pct": job["pct"],
+        "msg": job["msg"],
+        "started_at": job["started_at"],
+        "updated_at": job["updated_at"],
+        "finished_at": job["finished_at"],
+        "extra": job["extra"],
+    }
+    if job["error"]:
+        out["error"] = job["error"]
+    if job["result"]:
+        out["result"] = job["result"]
+    return out
 
 
 @app.post("/api/articles/{article_id}/listening/prepare")
