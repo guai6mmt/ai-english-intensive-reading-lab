@@ -506,8 +506,10 @@ function markPrepareFailed(msg) {
   setPrepareStage("failed", 0, msg || "准备失败");
 }
 
-function applyAlignedResult(data) {
-  state.alignedAudioUrl = data.audio_url;
+function applyAlignedResult(data, bustCache = false) {
+  // Regenerated audio reuses the same /audio/<key>.wav filename, so append a
+  // cache-buster to force the browser to fetch the fresh bytes.
+  state.alignedAudioUrl = bustCache ? `${data.audio_url}?t=${Date.now()}` : data.audio_url;
   const byIdx = new Map((data.alignments || []).map((s) => [s.index, s]));
   for (const s of state.sentences) {
     const aligned = byIdx.get(s.index);
@@ -523,11 +525,33 @@ function applyAlignedResult(data) {
   ensureAlignedAudio();
 }
 
-async function phaseAlignedAudio() {
-  if (state.alignedLoading || state.alignedReady) return;
+async function regenerateAligned() {
+  if (state.alignedLoading) return;
+  if (!confirm("重新解析并生成整篇音频？将重新调用 TTS，可能需要一些时间。")) return;
+  const btn = $("lpRegenBtn");
+  if (btn) btn.classList.add("spinning");
+  try {
+    await phaseAlignedAudio(true);
+  } finally {
+    if (btn) btn.classList.remove("spinning");
+  }
+}
+
+async function phaseAlignedAudio(force = false) {
+  if (state.alignedLoading) return;
+  if (state.alignedReady && !force) return;
+  if (force) {
+    // Discard the existing timeline + cached audio element so the regenerated
+    // result is re-applied from scratch.
+    stopCurrent();
+    if (state.alignedAudio) { try { state.alignedAudio.pause(); } catch {} }
+    state.alignedAudio = null;
+    state.alignedReady = false;
+    state.alignedFailed = false;
+  }
   state.alignedLoading = true;
   showPrepare();
-  setPrepareStage("pending", 0, "请求开始…");
+  setPrepareStage("pending", 0, force ? "重新生成中…" : "请求开始…");
 
   let startedAt = Date.now();
   const tickElapsed = () => setPrepareElapsed(Math.floor((Date.now() - startedAt) / 1000));
@@ -540,13 +564,13 @@ async function phaseAlignedAudio() {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enable_words: true }),
+        body: JSON.stringify({ enable_words: true, refresh: force }),
       }
     );
 
     // Cache hit → no polling needed
     if (startData.cached && startData.result) {
-      applyAlignedResult(startData.result);
+      applyAlignedResult(startData.result, force);
       setPrepareStage("ready", 100, "命中缓存,无需重新生成");
       markPrepareDone();
       return;
@@ -575,8 +599,8 @@ async function phaseAlignedAudio() {
         return;
       }
       if (status.result) {
-        applyAlignedResult(status.result);
-        setPrepareStage("ready", 100, "时间轴已就绪");
+        applyAlignedResult(status.result, force);
+        setPrepareStage("ready", 100, force ? "已重新生成" : "时间轴已就绪");
         markPrepareDone();
         return;
       }
@@ -600,6 +624,7 @@ function wireEvents() {
   $("lpThemeBtn").addEventListener("click", () => {
     applyTheme(state.theme === "dark" ? "light" : "dark");
   });
+  $("lpRegenBtn").addEventListener("click", regenerateAligned);
   $("lpFullscreenBtn").addEventListener("click", async () => {
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
