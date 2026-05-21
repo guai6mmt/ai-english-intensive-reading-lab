@@ -257,6 +257,7 @@ class AlignedAudioRequest(BaseModel):
     enable_words: bool = True
     voice: str | None = None
     language_type: str | None = None
+    provider: str | None = None
 
 
 class DictationItemsRequest(BaseModel):
@@ -3065,44 +3066,68 @@ def listening_sentences(article_id: str) -> dict[str, Any]:
     return {"article_id": article_id, "title": article.get("title", ""), "sentences": items}
 
 
+@app.get("/api/articles/{article_id}/listening/audio-variants")
+def listening_audio_variants(article_id: str) -> dict[str, Any]:
+    """List the per-provider aligned-audio variants and whether each is already
+    cached on disk, so the listening UI can let the user pick a generated one."""
+    article = find_article(article_id)
+    items = listening_sentence_items(article)
+    settings = load_settings()
+    current = task_provider("audio", settings=settings)
+    variants = []
+    for provider in ("qwen", "minimax"):
+        try:
+            ctx = _build_aligned_context(article, article_id, items, provider)
+        except HTTPException:
+            continue
+        cached = ctx["audio_path"].exists() and ctx["align_path"].exists()
+        variants.append({
+            "provider": provider,
+            "label": AUDIO_PROVIDER_LABELS.get(provider, provider),
+            "model": ctx["tts_config"]["model"],
+            "voice": ctx["voice"],
+            "configured": bool(ctx["tts_config"].get("api_key")),
+            "cached": cached,
+            "audio_url": ctx["audio_url"] if cached else None,
+        })
+    return {"article_id": article_id, "current": current, "variants": variants}
+
+
 class PipelineError(Exception):
     """Friendly error raised inside the aligned-audio pipeline; surfaced to the user."""
 
 
-def _aligned_audio_prepare(article_id: str, request: AlignedAudioRequest) -> dict[str, Any]:
-    """Common validation: article, items, provider configs, cache key. Returns a
-    context dict consumed by the provider-specific pipelines."""
-    article = find_article(article_id)
-    paragraphs = article.get("cleaned_paragraphs") or article.get("paragraphs") or []
-    if not paragraphs:
-        raise HTTPException(400, "文章暂无可用文本，请先完成文本检查。")
-    settings = load_settings()
-    provider = task_provider("audio", settings=settings)
-    items = listening_sentence_items(article)
-    if not items:
-        raise HTTPException(400, "无法切分出句子。")
+AUDIO_PROVIDER_LABELS = {"qwen": "Qwen", "minimax": "MiniMax"}
 
+
+def _build_aligned_context(
+    article: dict[str, Any],
+    article_id: str,
+    items: list[dict[str, Any]],
+    provider: str,
+    voice_override: str | None = None,
+    language_override: str | None = None,
+    enable_words: bool = True,
+) -> dict[str, Any]:
+    """Resolve provider configs, voice/language and the cache key/paths for one
+    audio provider. Pure: does not require the provider to be the current
+    setting, so it is also used to probe which variants are cached."""
     if provider == "minimax":
         tts_config = minimax_tts_config()
         asr_config = {"model": "minimax-subtitle"}
-        voice = (request.voice or tts_config["voice"]).strip() or tts_config["voice"]
-        language_type = (request.language_type or tts_config["language_boost"]).strip() or tts_config["language_boost"]
+        voice = (voice_override or tts_config["voice"]).strip() or tts_config["voice"]
+        language_type = (language_override or tts_config["language_boost"]).strip() or tts_config["language_boost"]
     elif provider == "qwen":
         tts_config = qwen_tts_config()
         asr_config = qwen_asr_config()
-        voice = (request.voice or tts_config["voice"]).strip() or "Ethan"
-        language_type = (request.language_type or tts_config["language_type"]).strip() or "English"
+        voice = (voice_override or tts_config["voice"]).strip() or "Ethan"
+        language_type = (language_override or tts_config["language_type"]).strip() or "English"
     else:
         raise HTTPException(400, "整篇时间轴音频需要 Qwen 或 MiniMax，请在设置中配置 AI 朗读。")
 
     key = aligned_audio_cache_key(
-        article_id,
-        items,
-        f"{provider}:{voice}",
-        language_type,
-        tts_config["model"],
-        asr_config["model"],
-        enable_words=request.enable_words,
+        article_id, items, f"{provider}:{voice}", language_type,
+        tts_config["model"], asr_config["model"], enable_words=enable_words,
     )
     return {
         "article": article,
@@ -3118,6 +3143,26 @@ def _aligned_audio_prepare(article_id: str, request: AlignedAudioRequest) -> dic
         "audio_path": AUDIO_CACHE_DIR / f"{key}.wav",
         "align_path": AUDIO_CACHE_DIR / f"{key}.align.json",
     }
+
+
+def _aligned_audio_prepare(article_id: str, request: AlignedAudioRequest) -> dict[str, Any]:
+    """Common validation: article, items, provider configs, cache key. Returns a
+    context dict consumed by the provider-specific pipelines."""
+    article = find_article(article_id)
+    paragraphs = article.get("cleaned_paragraphs") or article.get("paragraphs") or []
+    if not paragraphs:
+        raise HTTPException(400, "文章暂无可用文本，请先完成文本检查。")
+    settings = load_settings()
+    requested = (request.provider or "").strip().lower()
+    provider = requested if requested in ("qwen", "minimax") else task_provider("audio", settings=settings)
+    items = listening_sentence_items(article)
+    if not items:
+        raise HTTPException(400, "无法切分出句子。")
+    return _build_aligned_context(
+        article, article_id, items, provider,
+        voice_override=request.voice, language_override=request.language_type,
+        enable_words=request.enable_words,
+    )
 
 
 def _run_aligned_audio_for_provider(ctx: dict[str, Any], enable_words: bool,

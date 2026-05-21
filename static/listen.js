@@ -29,6 +29,8 @@ const state = {
   playbackRate: 1.0,
   fallbackActive: false,
   theme: localStorage.getItem("lp_theme") || "dark",
+  provider: "",          // chosen TTS provider for the aligned timeline
+  variants: [],          // [{ provider, label, model, voice, cached, configured }]
 };
 
 // ── Helpers ──
@@ -525,6 +527,59 @@ function applyAlignedResult(data, bustCache = false) {
   ensureAlignedAudio();
 }
 
+async function fetchVariants() {
+  try {
+    const data = await api(`/api/articles/${encodeURIComponent(state.articleId)}/listening/audio-variants`);
+    state.variants = data.variants || [];
+    if (!state.provider) {
+      // Prefer a provider that already has cached audio, else the current setting.
+      const cached = state.variants.find((v) => v.cached);
+      state.provider = (cached && cached.provider) || data.current || (state.variants[0] && state.variants[0].provider) || "";
+    }
+    renderSourceSelector();
+  } catch (err) {
+    console.warn("variants failed", err);
+  }
+}
+
+function renderSourceSelector() {
+  const box = $("lpSource");
+  if (!box) return;
+  if (!state.variants.length) { box.hidden = true; return; }
+  box.hidden = false;
+  const pills = state.variants.map((v) => {
+    const active = v.provider === state.provider ? " active" : "";
+    const cached = v.cached ? " cached" : "";
+    const disabled = !v.configured && !v.cached ? " disabled" : "";
+    const tip = v.cached ? "已生成" : (v.configured ? "未生成，点击生成" : "未配置该模型");
+    return `<button class="lp-src-pill${active}${cached}" data-provider="${esc(v.provider)}"${disabled} title="${esc(v.label)} · ${esc(v.model)} · ${tip}">
+      <span class="lp-src-dot"></span>${esc(v.label)}
+    </button>`;
+  }).join("");
+  box.innerHTML = `<span class="lp-source-label">朗读模型</span>${pills}`;
+}
+
+async function switchProvider(provider) {
+  if (!provider || provider === state.provider) return;
+  if (state.alignedLoading) return;
+  const v = state.variants.find((x) => x.provider === provider);
+  if (v && !v.configured && !v.cached) {
+    setSub(`${v.label} 未配置，请先在设置中填入 API Key`);
+    return;
+  }
+  if (v && !v.cached && !confirm(`使用 ${v.label} 生成整篇音频？将调用 TTS，可能需要一些时间。`)) return;
+  state.provider = provider;
+  // Reset the timeline so the newly chosen provider's audio is applied. Use a
+  // non-forced run so an already-cached variant is reused instantly.
+  stopCurrent();
+  if (state.alignedAudio) { try { state.alignedAudio.pause(); } catch {} }
+  state.alignedAudio = null;
+  state.alignedReady = false;
+  state.alignedFailed = false;
+  renderSourceSelector();
+  await phaseAlignedAudio(false);
+}
+
 async function regenerateAligned() {
   if (state.alignedLoading) return;
   if (!confirm("重新解析并生成整篇音频？将重新调用 TTS，可能需要一些时间。")) return;
@@ -564,7 +619,7 @@ async function phaseAlignedAudio(force = false) {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enable_words: true, refresh: force }),
+        body: JSON.stringify({ enable_words: true, refresh: force, provider: state.provider || undefined }),
       }
     );
 
@@ -602,6 +657,7 @@ async function phaseAlignedAudio(force = false) {
         applyAlignedResult(status.result, force);
         setPrepareStage("ready", 100, force ? "已重新生成" : "时间轴已就绪");
         markPrepareDone();
+        fetchVariants();
         return;
       }
     }
@@ -625,6 +681,10 @@ function wireEvents() {
     applyTheme(state.theme === "dark" ? "light" : "dark");
   });
   $("lpRegenBtn").addEventListener("click", regenerateAligned);
+  $("lpSource").addEventListener("click", (e) => {
+    const pill = e.target.closest(".lp-src-pill");
+    if (pill && !pill.disabled) switchProvider(pill.dataset.provider);
+  });
   $("lpFullscreenBtn").addEventListener("click", async () => {
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
@@ -679,6 +739,7 @@ async function boot() {
   const ok = await phase1();
   if (ok) {
     phase2(); // fire-and-forget background analysis
+    await fetchVariants(); // resolve which provider's timeline to use
     phaseAlignedAudio(); // fire-and-forget precise timeline
   }
 }
