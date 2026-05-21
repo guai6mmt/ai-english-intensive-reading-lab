@@ -1560,7 +1560,13 @@ def _minimax_t2a(
     try:
         data = response.json()
     except ValueError as exc:
-        raise HTTPException(response.status_code or 502, "MiniMax 朗读返回了非 JSON 响应。") from exc
+        snippet = (response.text or "").strip().replace("\n", " ")[:200]
+        raise HTTPException(
+            response.status_code or 502,
+            f"MiniMax 朗读返回了非 JSON 响应（HTTP {response.status_code}，URL {url}）。"
+            f"通常是 Base URL 与账号区域不匹配——国际站用 https://api.minimax.io/v1，"
+            f"国内站用 https://api.minimaxi.com/v1。响应片段：{snippet}",
+        ) from exc
     base_resp = data.get("base_resp") or {}
     if response.status_code >= 400 or int(base_resp.get("status_code", 0)) != 0:
         raise HTTPException(
@@ -1780,7 +1786,7 @@ def aligned_audio_cache_key(
     enable_words: bool = True,
 ) -> str:
     text_hash = stable_id(*(item["text"] for item in items[:300]), str(len(items)))
-    payload = f"{article_id}|{text_hash}|{voice}|{language_type}|{tts_model}|{asr_model}|words:{int(enable_words)}|v3"
+    payload = f"{article_id}|{text_hash}|{voice}|{language_type}|{tts_model}|{asr_model}|words:{int(enable_words)}|v4"
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
@@ -3311,12 +3317,7 @@ def _run_aligned_audio_minimax(
 
     total_ms = wav_duration_ms(audio_bytes)
     progress_cb("align", 92, "对齐原文句子…")
-    if subtitles:
-        alignments = align_asr_to_original(items, subtitles, chunks, chunk_offsets_ms, total_ms)
-    else:
-        # No subtitles returned — fall back to even time distribution so the
-        # listening view still scrolls roughly in sync.
-        alignments = _even_time_alignment(items, total_ms)
+    alignments, align_method = align_minimax_sentences(items, subtitles, total_ms)
 
     payload = {
         "alignments": alignments,
@@ -3326,6 +3327,7 @@ def _run_aligned_audio_minimax(
             "provider": "minimax",
             "chunks": len(chunks),
             "subtitle_sentences": len(subtitles),
+            "align_method": align_method,
         },
     }
 
@@ -3340,22 +3342,89 @@ def _run_aligned_audio_minimax(
     }
 
 
-def _even_time_alignment(items: list[dict[str, Any]], total_ms: int) -> list[dict[str, Any]]:
-    n = max(1, len(items))
-    span = total_ms / n if total_ms else 0
+def _proportional_time_alignment(items: list[dict[str, Any]], total_ms: int) -> list[dict[str, Any]]:
+    """Distribute total_ms across sentences weighted by word count. Far closer to
+    real speech timing than an equal split, used when no subtitle timestamps are
+    available."""
+    weights = [max(1, len(normalize_for_alignment(it["text"]).split())) for it in items]
+    total_w = sum(weights) or 1
     out: list[dict[str, Any]] = []
-    for i, item in enumerate(items):
+    acc = 0
+    for item, w in zip(items, weights):
+        begin = int(total_ms * acc / total_w) if total_ms else 0
+        acc += w
+        end = int(total_ms * acc / total_w) if total_ms else 0
         out.append({
             "index": item["index"],
             "para": item["para"],
             "text": item["text"],
             "asr_text": "",
-            "begin_ms": int(i * span),
-            "end_ms": int((i + 1) * span),
+            "begin_ms": begin,
+            "end_ms": max(end, begin + 1),
             "confidence": 0.0,
             "words": [],
         })
     return out
+
+
+def _interp_subtitle_time(spans: list[tuple[float, float, int, int]], frac: float) -> int:
+    """Map a cumulative-character fraction [0,1] onto a millisecond timestamp by
+    locating the subtitle span covering that fraction and interpolating linearly
+    inside it."""
+    if not spans:
+        return 0
+    for start_frac, end_frac, begin_ms, end_ms in spans:
+        if frac <= end_frac or end_frac >= 1.0:
+            span_w = end_frac - start_frac
+            ratio = 0.0 if span_w <= 0 else max(0.0, min(1.0, (frac - start_frac) / span_w))
+            return int(begin_ms + (end_ms - begin_ms) * ratio)
+    return spans[-1][3]
+
+
+def align_minimax_sentences(
+    items: list[dict[str, Any]], subtitles: list[dict[str, Any]], total_ms: int,
+) -> tuple[list[dict[str, Any]], str]:
+    """Align original sentences to MiniMax's sentence-level subtitle timestamps.
+
+    MiniMax reads our text in order, so we anchor by cumulative character
+    position: each original sentence's character span [s,e) is projected onto the
+    subtitle timeline (also indexed by cumulative characters), and the matching
+    real timestamps are interpolated. This is drift-free and tolerant of the two
+    sides segmenting sentences differently. Returns (alignments, method)."""
+    if not subtitles:
+        return _proportional_time_alignment(items, total_ms), "proportional"
+
+    sub_lens = [max(1, len(normalize_for_alignment(s["text"]))) for s in subtitles]
+    total_sub = sum(sub_lens) or 1
+    spans: list[tuple[float, float, int, int]] = []
+    acc = 0
+    for s, length in zip(subtitles, sub_lens):
+        start_frac = acc / total_sub
+        acc += length
+        spans.append((start_frac, acc / total_sub, int(s["begin_ms"]), int(s["end_ms"])))
+
+    item_lens = [max(1, len(normalize_for_alignment(it["text"]))) for it in items]
+    total_item = sum(item_lens) or 1
+    out: list[dict[str, Any]] = []
+    acc = 0
+    for item, length in zip(items, item_lens):
+        s_frac = acc / total_item
+        acc += length
+        e_frac = acc / total_item
+        begin = _interp_subtitle_time(spans, s_frac)
+        end = _interp_subtitle_time(spans, e_frac)
+        out.append({
+            "index": item["index"],
+            "para": item["para"],
+            "text": item["text"],
+            "asr_text": "",
+            "begin_ms": begin,
+            "end_ms": max(end, begin + 1),
+            "confidence": 0.6,
+            "words": [],
+        })
+    _enforce_monotonic(out, total_ms)
+    return out, "subtitle-charmap"
 
 
 @app.post("/api/articles/{article_id}/listening/aligned-audio")
