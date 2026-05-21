@@ -9,6 +9,7 @@ import io
 import json
 import math
 import os
+import posixpath
 import re
 import requests
 import shutil
@@ -47,6 +48,7 @@ ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 AUDIO_CACHE_DIR = DATA_DIR / "audio_cache"
+COVERS_DIR = DATA_DIR / "covers"
 STATIC_DIR = ROOT / "static"
 LIBRARY_PATH = DATA_DIR / "library.json"
 VOCAB_PATH = DATA_DIR / "vocabulary.json"
@@ -330,6 +332,7 @@ def ensure_dirs() -> None:
     DATA_DIR.mkdir(exist_ok=True)
     UPLOAD_DIR.mkdir(exist_ok=True)
     AUDIO_CACHE_DIR.mkdir(exist_ok=True)
+    COVERS_DIR.mkdir(exist_ok=True)
     STATIC_DIR.mkdir(exist_ok=True)
 
 
@@ -2414,12 +2417,140 @@ def export_article_audio(article_id: str) -> Response:
     )
 
 
+# ── Library list projection + cover extraction ──
+_LIST_ARTICLE_FIELDS = (
+    "id", "source_id", "title", "subtitle", "section",
+    "stats", "ai_tags", "favorite", "last_opened_at",
+)
+
+
+def _image_ext(data: bytes) -> str:
+    if data[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return ".gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    return ".jpg"
+
+
+def extract_epub_cover(epub_path: Path) -> bytes | None:
+    """Pull the cover image out of an EPUB — OPF metadata first (EPUB3
+    properties=cover-image, then EPUB2 <meta name=cover>), falling back to a
+    file whose name looks like a cover. Returns raw image bytes or None."""
+    try:
+        with zipfile.ZipFile(epub_path) as book:
+            names = book.namelist()
+            lower = {n.lower(): n for n in names}
+            cover_href = None
+
+            container = lower.get("meta-inf/container.xml")
+            opf_name = None
+            if container:
+                m = re.search(r'full-path="([^"]+)"', book.read(container).decode("utf-8", "ignore"))
+                if m:
+                    opf_name = m.group(1)
+            if opf_name and opf_name in names:
+                opf_dir = posixpath.dirname(opf_name)
+                soup = BeautifulSoup(book.read(opf_name).decode("utf-8", "ignore"), "html.parser")
+                item = soup.find("item", attrs={"properties": re.compile("cover-image")})
+                if not item:
+                    meta = soup.find("meta", attrs={"name": "cover"})
+                    cover_id = meta.get("content") if meta else None
+                    if cover_id:
+                        item = soup.find("item", attrs={"id": cover_id})
+                href = item.get("href") if item else None
+                if href:
+                    cover_href = posixpath.normpath(posixpath.join(opf_dir, href)) if opf_dir else href
+
+            if not cover_href:
+                images = [n for n in names if n.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".gif"))]
+                named = [n for n in images if "cover" in n.lower()]
+                cover_href = (named or images or [None])[0]
+
+            if cover_href:
+                actual = cover_href if cover_href in names else lower.get(cover_href.lower())
+                if actual:
+                    return book.read(actual)
+    except Exception:
+        return None
+    return None
+
+
+def _store_cover_bytes(source_id: str, data: bytes) -> str:
+    COVERS_DIR.mkdir(parents=True, exist_ok=True)
+    name = f"{source_id}{_image_ext(data)}"
+    (COVERS_DIR / name).write_bytes(data)
+    return name
+
+
+def source_cover_url(source: dict[str, Any]) -> str | None:
+    cover_file = source.get("cover_file")
+    if cover_file and (COVERS_DIR / cover_file).exists():
+        return f"/covers/{cover_file}"
+    return None
+
+
+def slim_article(article: dict[str, Any]) -> dict[str, Any]:
+    return {k: article.get(k) for k in _LIST_ARTICLE_FIELDS}
+
+
+def slim_library(library: dict[str, Any]) -> dict[str, Any]:
+    """List projection: only the fields the library/sidebar render, with each
+    source's article count, section list and cover. Heavy fields (paragraphs,
+    cleaned_paragraphs, AI analyses) are dropped — fetched per article on open."""
+    sources_out = []
+    for source in library.get("sources", []):
+        articles = source.get("articles", [])
+        sections: list[str] = []
+        seen: set[str] = set()
+        for article in articles:
+            sec = article.get("section") or "Articles"
+            if sec not in seen:
+                seen.add(sec)
+                sections.append(sec)
+        sources_out.append({
+            "id": source.get("id"),
+            "filename": source.get("filename"),
+            "uploaded_at": source.get("uploaded_at"),
+            "article_count": len(articles),
+            "sections": sections,
+            "cover_url": source_cover_url(source),
+            "articles": [slim_article(a) for a in articles],
+        })
+    return {"sources": sources_out}
+
+
+def _migrate_library_inplace(library: dict[str, Any]) -> bool:
+    """One-time backfill: extract EPUB covers for sources that don't have one
+    yet, and enrich any article missing derived fields. Returns True if the
+    library changed (so the caller persists it once)."""
+    changed = False
+    for source in library.get("sources", []):
+        if "cover_file" not in source:
+            cover_file = None
+            stored = source.get("stored_path") or ""
+            if str(stored).lower().endswith(".epub") and Path(stored).exists():
+                data = extract_epub_cover(Path(stored))
+                if data:
+                    cover_file = _store_cover_bytes(source["id"], data)
+            source["cover_file"] = cover_file
+            changed = True
+        for article in source.get("articles", []):
+            if not article.get("stats") or "ai_tags" not in article or "cleaned_paragraphs" not in article:
+                enrich_article(article)
+                changed = True
+    return changed
+
+
 @app.get("/api/library")
 def get_library() -> dict[str, Any]:
     library = load_json(LIBRARY_PATH, {"sources": []})
-    for source in library.get("sources", []):
-        source["articles"] = [enrich_article(a) for a in source.get("articles", [])]
-    return {"library": library, "summary": library_summary(library)}
+    if _migrate_library_inplace(library):
+        save_json(LIBRARY_PATH, library)
+    return {"library": slim_library(library), "summary": library_summary(library)}
 
 
 @app.post("/api/upload")
@@ -2450,6 +2581,11 @@ async def upload_file(file: UploadFile = File(...)) -> dict[str, Any]:
     if not articles:
         safe_unlink(saved_path)
         raise HTTPException(400, "没有解析到可学习的文章。")
+    cover_file = None
+    if suffix == ".epub":
+        cover = extract_epub_cover(saved_path)
+        if cover:
+            cover_file = _store_cover_bytes(source_id, cover)
     source = {
         "id": source_id,
         "filename": file.filename,
@@ -2457,6 +2593,7 @@ async def upload_file(file: UploadFile = File(...)) -> dict[str, Any]:
         "content_hash": content_hash,
         "uploaded_at": now_iso(),
         "article_count": len(articles),
+        "cover_file": cover_file,
         "articles": articles,
     }
     library.setdefault("sources", []).append(source)
@@ -2501,8 +2638,9 @@ def rebuild_library() -> dict[str, Any]:
             "articles": articles,
         })
     new_library = {"sources": rebuilt_sources}
+    _migrate_library_inplace(new_library)
     save_json(LIBRARY_PATH, new_library)
-    return {"library": new_library, "summary": library_summary(new_library)}
+    return {"library": slim_library(new_library), "summary": library_summary(new_library)}
 
 
 @app.get("/api/articles/{article_id}")
@@ -3226,12 +3364,17 @@ def delete_source(source_id: str) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail="Source not found")
         stored_path = Path(source.get("stored_path", ""))
         safe_unlink(stored_path)
+        cover_file = source.get("cover_file")
+        if cover_file:
+            safe_unlink(COVERS_DIR / cover_file)
         library["sources"] = [s for s in sources if s["id"] != source_id]
     mutate_library(apply)
     lib = load_json(LIBRARY_PATH, {"sources": []})
-    return {"library": lib, "summary": library_summary(lib)}
+    return {"library": slim_library(lib), "summary": library_summary(lib)}
 
 
 AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+COVERS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/audio", StaticFiles(directory=AUDIO_CACHE_DIR), name="audio")
+app.mount("/covers", StaticFiles(directory=COVERS_DIR), name="covers")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
