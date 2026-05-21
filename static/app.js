@@ -1701,7 +1701,7 @@ document.addEventListener("click", async (event) => {
   const targetEl = rawTarget instanceof Element ? rawTarget : rawTarget?.parentElement;
   if (!targetEl) return;
   const target = targetEl.closest(
-    "button, [data-open-article], [data-open-book], [data-step], [data-tab], [data-list], [data-diff], .sent, [data-say], [data-add-vocab], [data-vocab-imitate], [data-grade-reading], [data-dictation-feedback], [data-toggle-source], [data-go], [data-density], [data-size], [data-theme], [data-round], [data-speed], [data-play-dict], [data-delete-source], .crumb-link"
+    "button, [data-open-article], [data-open-book], [data-step], [data-tab], [data-list], [data-diff], .sent, [data-say], [data-add-vocab], [data-vocab-imitate], [data-grade-reading], [data-dictation-feedback], [data-toggle-source], [data-collapse-section], [data-go], [data-density], [data-size], [data-theme], [data-round], [data-speed], [data-play-dict], [data-delete-source], .crumb-link"
   ) || targetEl;
 
   // Sidebar list switch
@@ -1875,16 +1875,6 @@ document.addEventListener("click", async (event) => {
     else state.collapsedSections.add(key);
     saveCollapseState();
     renderSidebar();
-    return;
-  }
-  if (target.matches(".section-group-h")) {
-    const key = target.dataset.collapseSection;
-    if (key) {
-      if (state.collapsedSections.has(key)) state.collapsedSections.delete(key);
-      else state.collapsedSections.add(key);
-      saveCollapseState();
-      renderSidebar();
-    }
     return;
   }
   if (target.matches("[data-delete-source]")) {
