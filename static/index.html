@@ -187,11 +187,11 @@
           </label>
           <label>AI 朗读
             <select id="audioProviderInput">
-              <option value="qwen">Qwen</option>
-              <option value="deepseek">DeepSeek</option>
+              <option value="qwen">Qwen（TTS + ASR 对齐）</option>
+              <option value="minimax">MiniMax（语音更连贯，自带时间轴）</option>
             </select>
           </label>
-          <p class="status-text">文本、图片、音频可分别选择模型；当前 AI 朗读仅 Qwen 提供 TTS。</p>
+          <p class="status-text">文本、图片、音频可分别选择模型。AI 朗读：Qwen 走 TTS + OSS + ASR 对齐；MiniMax 整篇一次合成、语音更连贯并自带句级时间轴，无需 OSS/ASR。</p>
         </section>
 
         <div class="settings-grid">
@@ -289,6 +289,42 @@
               <input id="ossPrefixInput" type="text" placeholder="asr-temp/" />
             </label>
             <p class="status-text" id="ossStatusText"></p>
+          </section>
+        </div>
+
+        <div class="settings-grid">
+          <section>
+            <h4>MiniMax · TTS</h4>
+            <label>API Key
+              <input id="minimaxKeyInput" type="password" placeholder="留空则使用环境变量" />
+            </label>
+            <label>Group ID
+              <input id="minimaxGroupInput" type="text" placeholder="MiniMax GroupId" />
+            </label>
+            <label>Base URL
+              <input id="minimaxBaseInput" type="text" placeholder="https://api.minimax.io/v1" />
+            </label>
+            <label>Model
+              <select id="minimaxModelInput">
+                <option value="speech-2.6-hd">speech-2.6-hd</option>
+                <option value="speech-2.6-turbo">speech-2.6-turbo</option>
+                <option value="speech-2.8-hd">speech-2.8-hd</option>
+                <option value="speech-2.8-turbo">speech-2.8-turbo</option>
+                <option value="speech-02-hd">speech-02-hd</option>
+                <option value="speech-02-turbo">speech-02-turbo</option>
+              </select>
+            </label>
+            <label>Voice ID
+              <input id="minimaxVoiceInput" type="text" placeholder="English_Graceful_Lady" />
+            </label>
+            <label>语速
+              <input id="minimaxSpeedInput" type="number" step="0.1" min="0.5" max="2" placeholder="1.0" />
+            </label>
+            <label>Language Boost
+              <input id="minimaxLangInput" type="text" placeholder="English" />
+            </label>
+            <button class="btn" id="testMinimaxBtn">测试 MiniMax</button>
+            <p class="status-text" id="minimaxTestResult">仅 hd 与 turbo（2.6/2.8/02）模型支持句级字幕时间轴。</p>
           </section>
         </div>
 

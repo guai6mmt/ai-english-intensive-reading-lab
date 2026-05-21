@@ -1585,6 +1585,15 @@ function fillSettingsForm() {
   $("qwenAsrModelInput").value = qwenAsr.model || "qwen3-asr-flash-filetrans";
   $("dashscopeKeyInput").placeholder = qwen.dashscope_api_key_masked || "留空则使用环境变量";
 
+  const minimax = state.settings.minimax || state.config.minimax || {};
+  $("minimaxGroupInput").value = minimax.group_id || "";
+  $("minimaxBaseInput").value = minimax.base_url || "https://api.minimax.io/v1";
+  setSelectValue($("minimaxModelInput"), minimax.model || "speech-2.6-hd");
+  $("minimaxVoiceInput").value = minimax.voice || "English_Graceful_Lady";
+  $("minimaxSpeedInput").value = minimax.speed || "1.0";
+  $("minimaxLangInput").value = minimax.language_boost || "English";
+  $("minimaxKeyInput").placeholder = minimax.api_key_masked || "留空则使用环境变量";
+
   const oss = state.settings.oss || state.config.oss || {};
   $("ossBucketInput").value = oss.bucket || "";
   $("ossEndpointInput").value = oss.endpoint || "";
@@ -1603,7 +1612,7 @@ function fillSettingsForm() {
   const rows = [
     `<div><strong>文本</strong><span>${escapeHtml(tasks.text || "deepseek")} · ${escapeHtml(providers[tasks.text]?.model || state.config.primary_model || "")}</span></div>`,
     `<div><strong>图片</strong><span>${escapeHtml(tasks.image || "qwen")} · ${escapeHtml(qwen.image_model || "")}</span></div>`,
-    `<div><strong>音频</strong><span>${escapeHtml(tasks.audio || "qwen")} · ${escapeHtml(qwenTts.model || "")}</span></div>`,
+    `<div><strong>音频</strong><span>${escapeHtml(tasks.audio || "qwen")} · ${escapeHtml(tasks.audio === "minimax" ? (minimax.model || "") : (qwenTts.model || ""))}</span></div>`,
     ...["deepseek", "qwen"].map((name) => {
       const p = providers[name] || {};
       return `<div><strong>${name}</strong><span>${p.configured ? p.model : "未配置 · fallback"}</span></div>`;
@@ -1632,6 +1641,13 @@ function settingsPayload() {
     dashscope_api_key: $("dashscopeKeyInput").value,
     qwen_asr_base_url: $("qwenAsrBaseInput").value,
     qwen_asr_model: $("qwenAsrModelInput").value,
+    minimax_api_key: $("minimaxKeyInput").value,
+    minimax_group_id: $("minimaxGroupInput").value,
+    minimax_base_url: $("minimaxBaseInput").value,
+    minimax_tts_model: $("minimaxModelInput").value,
+    minimax_tts_voice: $("minimaxVoiceInput").value,
+    minimax_tts_speed: $("minimaxSpeedInput").value,
+    minimax_language_boost: $("minimaxLangInput").value,
     oss_access_key_id: $("ossKeyIdInput").value,
     oss_access_key_secret: $("ossKeySecretInput").value,
     oss_bucket: $("ossBucketInput").value,
@@ -1826,6 +1842,7 @@ document.addEventListener("click", async (event) => {
       $("deepseekKeyInput").value = "";
       $("qwenKeyInput").value = "";
       $("dashscopeKeyInput").value = "";
+      $("minimaxKeyInput").value = "";
       $("ossKeyIdInput").value = "";
       $("ossKeySecretInput").value = "";
       saveTweaks();
@@ -1845,6 +1862,20 @@ document.addEventListener("click", async (event) => {
         body: JSON.stringify(settingsPayload()),
       });
       box.textContent = renderProviderTestResult(data);
+    });
+    return;
+  }
+  if (target.id === "testMinimaxBtn") {
+    const box = $("minimaxTestResult");
+    await runAction(target, "测试中…", async () => {
+      const data = await api("/api/settings/test/minimax", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settingsPayload()),
+      });
+      box.textContent = data.ok
+        ? `连接成功：${data.model} @ ${data.base_url}`
+        : `连接失败：${data.message || "请检查 API Key / Group ID"}`;
     });
     return;
   }

@@ -76,6 +76,13 @@ DEFAULT_TASK_PROVIDERS = {
     "image": "qwen",
     "audio": "qwen",
 }
+# Per-task list of selectable providers. Text/image use the LLM providers in
+# AI_PROVIDERS; audio additionally supports MiniMax (TTS only, not an LLM).
+TASK_PROVIDER_CHOICES = {
+    "text": set(AI_PROVIDERS),
+    "image": set(AI_PROVIDERS),
+    "audio": {"qwen", "minimax"},
+}
 QWEN_TTS_DEFAULTS = {
     "base_url": os.getenv("QWEN_TTS_BASE_URL", os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1")),
     "model": os.getenv("QWEN_TTS_MODEL", "qwen3-tts-flash"),
@@ -85,6 +92,15 @@ QWEN_TTS_DEFAULTS = {
 QWEN_ASR_DEFAULTS = {
     "base_url": os.getenv("QWEN_ASR_BASE_URL", os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1")),
     "model": os.getenv("QWEN_ASR_MODEL", "qwen3-asr-flash-filetrans"),
+}
+MINIMAX_TTS_DEFAULTS = {
+    "base_url": os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1"),
+    "model": os.getenv("MINIMAX_TTS_MODEL", "speech-2.6-hd"),
+    "voice": os.getenv("MINIMAX_TTS_VOICE", "English_Graceful_Lady"),
+    "speed": os.getenv("MINIMAX_TTS_SPEED", "1.0"),
+    "language_boost": os.getenv("MINIMAX_LANGUAGE_BOOST", "English"),
+    # T2A v2 accepts up to 10000 chars; keep margin for whole-article single-pass.
+    "max_chars": 9000,
 }
 OSS_DEFAULTS = {
     "endpoint": os.getenv("OSS_ENDPOINT", ""),
@@ -216,6 +232,13 @@ class ModelSettingsRequest(BaseModel):
     dashscope_api_key: str | None = None
     qwen_asr_base_url: str | None = None
     qwen_asr_model: str | None = None
+    minimax_api_key: str | None = None
+    minimax_group_id: str | None = None
+    minimax_base_url: str | None = None
+    minimax_tts_model: str | None = None
+    minimax_tts_voice: str | None = None
+    minimax_tts_speed: str | None = None
+    minimax_language_boost: str | None = None
     oss_access_key_id: str | None = None
     oss_access_key_secret: str | None = None
     oss_bucket: str | None = None
@@ -432,7 +455,8 @@ def task_provider(task: str, settings: dict[str, Any] | None = None, overrides: 
     legacy_primary = settings.get("primary_provider") if task == "text" else None
     value = (overrides.get(f"{task}_provider") or settings.get(f"{task}_provider") or legacy_primary or default)
     provider = str(value).strip().lower()
-    return provider if provider in AI_PROVIDERS else default
+    choices = TASK_PROVIDER_CHOICES.get(task, set(AI_PROVIDERS))
+    return provider if provider in choices else default
 
 
 def primary_provider(settings: dict[str, Any] | None = None, overrides: dict[str, Any] | None = None) -> str:
@@ -531,6 +555,41 @@ def qwen_asr_config(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
             or (settings.get("qwen_asr_model") or "").strip()
             or QWEN_ASR_DEFAULTS["model"]
         ),
+    }
+
+
+def minimax_tts_config(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    settings = load_settings()
+    overrides = overrides or {}
+
+    def pick(key: str, default: str) -> str:
+        return (
+            (overrides.get(key) or "").strip()
+            or (settings.get(key) or "").strip()
+            or default
+        )
+
+    api_key = (
+        (overrides.get("minimax_api_key") or "").strip()
+        or (settings.get("minimax_api_key") or "").strip()
+        or (os.getenv("MINIMAX_API_KEY") or "").strip()
+    )
+    group_id = (
+        (overrides.get("minimax_group_id") or "").strip()
+        or (settings.get("minimax_group_id") or "").strip()
+        or (os.getenv("MINIMAX_GROUP_ID") or "").strip()
+    )
+    base_url = pick("minimax_base_url", MINIMAX_TTS_DEFAULTS["base_url"]).rstrip("/")
+    return {
+        "api_key": api_key,
+        "api_key_env": "MINIMAX_API_KEY",
+        "group_id": group_id,
+        "base_url": base_url,
+        "model": pick("minimax_tts_model", MINIMAX_TTS_DEFAULTS["model"]),
+        "voice": pick("minimax_tts_voice", MINIMAX_TTS_DEFAULTS["voice"]),
+        "speed": pick("minimax_tts_speed", MINIMAX_TTS_DEFAULTS["speed"]),
+        "language_boost": pick("minimax_language_boost", MINIMAX_TTS_DEFAULTS["language_boost"]),
+        "max_chars": MINIMAX_TTS_DEFAULTS["max_chars"],
     }
 
 
@@ -1432,6 +1491,135 @@ def synthesize_qwen_speech(text: str, voice: str | None = None, language_type: s
     }
 
 
+def _parse_minimax_subtitles(raw: Any) -> list[dict[str, Any]]:
+    """Normalise a MiniMax subtitle array into the same shape as ASR sentences:
+    [{"text", "begin_ms", "end_ms", "words": []}]. Field names vary across
+    MiniMax responses, so accept the common aliases defensively."""
+    entries = raw
+    if isinstance(raw, dict):
+        entries = raw.get("subtitles") or raw.get("data") or raw.get("result") or []
+    if not isinstance(entries, list):
+        return []
+    sentences: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        text = clean_text(str(entry.get("text") or entry.get("sentence") or ""))
+        begin = _time_value(entry, "time_begin", "begin_time", "start_time", "begin", "start")
+        end = _time_value(entry, "time_end", "end_time", "finish_time", "end", "stop")
+        if text and begin is not None and end is not None and end > begin:
+            sentences.append({"text": text, "begin_ms": begin, "end_ms": end, "words": []})
+    return sentences
+
+
+def _minimax_t2a(
+    text: str,
+    config: dict[str, Any],
+    subtitle_enable: bool = False,
+) -> tuple[bytes, list[dict[str, Any]], dict[str, Any]]:
+    """Call MiniMax T2A v2 and return (wav_bytes, subtitles, meta).
+
+    Audio is requested as WAV (hex output) so it concatenates with the existing
+    WAV pipeline. When ``subtitle_enable`` is set, MiniMax returns a
+    ``subtitle_file`` URL whose JSON gives sentence-level timestamps."""
+    if not config["api_key"]:
+        raise HTTPException(400, f"{config['api_key_env']} 未配置，无法调用 MiniMax 朗读。")
+    clean = clean_text(text)
+    if not clean:
+        raise HTTPException(400, "朗读文本不能为空。")
+    try:
+        speed = float(config.get("speed") or 1.0)
+    except (TypeError, ValueError):
+        speed = 1.0
+    url = f"{config['base_url']}/t2a_v2"
+    if config.get("group_id"):
+        url = f"{url}?GroupId={config['group_id']}"
+    payload: dict[str, Any] = {
+        "model": config["model"],
+        "text": truncate_text(clean, config.get("max_chars", 9000)),
+        "stream": False,
+        "output_format": "hex",
+        "voice_setting": {"voice_id": config["voice"], "speed": speed},
+        "audio_setting": {"sample_rate": 32000, "format": "wav", "channel": 1},
+        "subtitle_enable": bool(subtitle_enable),
+    }
+    if config.get("language_boost"):
+        payload["language_boost"] = config["language_boost"]
+    try:
+        response = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {config['api_key']}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=180,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(502, f"MiniMax 朗读请求失败：{exc}") from exc
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HTTPException(response.status_code or 502, "MiniMax 朗读返回了非 JSON 响应。") from exc
+    base_resp = data.get("base_resp") or {}
+    if response.status_code >= 400 or int(base_resp.get("status_code", 0)) != 0:
+        raise HTTPException(
+            response.status_code or 502,
+            base_resp.get("status_msg") or "MiniMax 朗读失败。",
+        )
+    block = data.get("data") or {}
+    audio_hex = block.get("audio")
+    if not audio_hex:
+        raise HTTPException(502, "MiniMax 朗读没有返回音频。")
+    try:
+        audio_bytes = bytes.fromhex(audio_hex)
+    except ValueError as exc:
+        raise HTTPException(502, "MiniMax 返回的音频无法解码。") from exc
+
+    subtitles: list[dict[str, Any]] = []
+    if subtitle_enable:
+        subtitle_file = block.get("subtitle_file")
+        if subtitle_file:
+            try:
+                sub_resp = requests.get(subtitle_file, timeout=60)
+                sub_resp.raise_for_status()
+                subtitles = _parse_minimax_subtitles(sub_resp.json())
+            except (requests.RequestException, ValueError):
+                subtitles = []
+        elif block.get("subtitles"):
+            subtitles = _parse_minimax_subtitles(block.get("subtitles"))
+
+    meta = {
+        "provider": "minimax",
+        "model": config["model"],
+        "voice": config["voice"],
+        "base_url": config["base_url"],
+        "used_ai": True,
+        "trace_id": data.get("trace_id"),
+    }
+    return audio_bytes, subtitles, meta
+
+
+def synthesize_minimax_speech(
+    text: str,
+    voice: str | None = None,
+    language_boost: str | None = None,
+) -> dict[str, Any]:
+    config = minimax_tts_config()
+    if voice:
+        config = {**config, "voice": voice.strip() or config["voice"]}
+    if language_boost:
+        config = {**config, "language_boost": language_boost.strip() or config["language_boost"]}
+    audio_bytes, subtitles, meta = _minimax_t2a(text, config)
+    return {
+        "audio_url": None,
+        "audio_data": base64.b64encode(audio_bytes).decode("ascii"),
+        "mime_type": "audio/wav",
+        "subtitles": subtitles,
+        "meta": meta,
+    }
+
+
 def generate_beep_wav(
     frequency: int = 520,
     duration: float = 0.45,
@@ -2237,7 +2425,22 @@ def settings_response() -> dict[str, Any]:
             "audio": audio,
         },
         "providers": {name: provider_public_config(name) for name in AI_PROVIDERS},
+        "minimax": minimax_public_config(),
         "oss": oss_public_config(),
+    }
+
+
+def minimax_public_config() -> dict[str, Any]:
+    config = minimax_tts_config()
+    return {
+        "configured": bool(config["api_key"]),
+        "base_url": config["base_url"],
+        "model": config["model"],
+        "voice": config["voice"],
+        "speed": config["speed"],
+        "language_boost": config["language_boost"],
+        "group_id": config["group_id"],
+        "api_key_masked": mask_secret(config["api_key"]),
     }
 
 
@@ -2274,7 +2477,8 @@ def update_settings(request: ModelSettingsRequest) -> dict[str, Any]:
                 settings["text_provider"] = value
             continue
         if key.endswith("_provider"):
-            if value in AI_PROVIDERS:
+            task = key[: -len("_provider")]
+            if value in TASK_PROVIDER_CHOICES.get(task, set(AI_PROVIDERS)):
                 settings[key] = value
             continue
         if key.endswith("_api_key") and not value:
@@ -2313,13 +2517,38 @@ def test_provider(provider: str, request: ModelSettingsRequest | None = None) ->
     return {"result": result, "meta": meta}
 
 
+@app.post("/api/settings/test/minimax")
+def test_minimax(request: ModelSettingsRequest | None = None) -> dict[str, Any]:
+    overrides = request.model_dump() if request else {}
+    config = minimax_tts_config(overrides)
+    if not config["api_key"]:
+        return {"ok": False, "message": f"{config['api_key_env']} 未配置。"}
+    try:
+        audio_bytes, _subs, meta = _minimax_t2a("Hello, this is a MiniMax test.", config)
+    except HTTPException as exc:
+        return {"ok": False, "message": str(exc.detail), "model": config["model"], "base_url": config["base_url"]}
+    return {
+        "ok": bool(audio_bytes),
+        "message": "connected",
+        "model": meta["model"],
+        "base_url": meta["base_url"],
+    }
+
+
+def synthesize_speech(text: str, voice: str | None = None, language_type: str | None = None,
+                      settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Provider-aware single-shot TTS. Returns a dict with audio_data/audio_url,
+    mime_type and meta (MiniMax additionally returns sentence subtitles)."""
+    provider = task_provider("audio", settings=settings)
+    if provider == "minimax":
+        return synthesize_minimax_speech(text, voice, language_type)
+    return synthesize_qwen_speech(text, voice, language_type)
+
+
 @app.post("/api/audio/speech")
 def audio_speech(request: SpeechRequest) -> dict[str, Any]:
     settings = load_settings()
-    provider = task_provider("audio", settings=settings)
-    if provider != "qwen":
-        raise HTTPException(400, "当前仅 Qwen 配置了 AI 朗读模型。")
-    return synthesize_qwen_speech(request.text, request.voice, request.language_type)
+    return synthesize_speech(request.text, request.voice, request.language_type, settings=settings)
 
 
 def sentence_audio_cache_key(text: str, voice: str, model: str, language_type: str) -> str:
@@ -2334,13 +2563,16 @@ def audio_sentence(request: SpeechRequest) -> dict[str, Any]:
         raise HTTPException(400, "朗读文本不能为空。")
     settings = load_settings()
     provider = task_provider("audio", settings=settings)
-    if provider != "qwen":
-        raise HTTPException(400, "当前仅 Qwen 配置了 AI 朗读模型。")
-    config = qwen_tts_config()
-    voice = (request.voice or config["voice"]).strip() or "Ethan"
-    language_type = (request.language_type or config["language_type"]).strip() or "English"
+    if provider == "minimax":
+        config = minimax_tts_config()
+        voice = (request.voice or config["voice"]).strip() or config["voice"]
+        language_type = (request.language_type or config["language_boost"]).strip() or config["language_boost"]
+    else:
+        config = qwen_tts_config()
+        voice = (request.voice or config["voice"]).strip() or "Ethan"
+        language_type = (request.language_type or config["language_type"]).strip() or "English"
     model = config["model"]
-    key = sentence_audio_cache_key(clean, voice, model, language_type)
+    key = sentence_audio_cache_key(clean, f"{provider}:{voice}", model, language_type)
     cache_path = AUDIO_CACHE_DIR / f"{key}.wav"
     audio_url = f"/audio/{key}.wav"
     if cache_path.exists() and cache_path.stat().st_size > 0:
@@ -2350,7 +2582,7 @@ def audio_sentence(request: SpeechRequest) -> dict[str, Any]:
             "mime_type": "audio/wav",
             "key": key,
         }
-    tts = synthesize_qwen_speech(clean, voice, language_type)
+    tts = synthesize_speech(clean, voice, language_type, settings=settings)
     if tts.get("audio_data"):
         audio_bytes = base64.b64decode(tts["audio_data"])
     elif tts.get("audio_url"):
@@ -2382,13 +2614,13 @@ def export_article_audio(article_id: str) -> Response:
         raise HTTPException(400, "文章暂无可用文本。请先完成文本检查。")
     settings = load_settings()
     provider = task_provider("audio", settings=settings)
-    if provider != "qwen":
-        raise HTTPException(400, "音频导出需要 Qwen TTS，请在设置页面配置 Qwen API Key。")
+    if provider not in ("qwen", "minimax"):
+        raise HTTPException(400, "音频导出需要 Qwen 或 MiniMax TTS，请在设置页面配置。")
     joined = " ".join(str(p) for p in paragraphs if p)
     if len(joined) > 2600:
         joined = joined[:2600].rsplit(" ", 1)[0] + "…"
     tts_text = f"{title}. {joined}"
-    tts = synthesize_qwen_speech(tts_text)
+    tts = synthesize_speech(tts_text, settings=settings)
     if tts.get("audio_data"):
         audio_bytes = base64.b64decode(tts["audio_data"])
     elif tts.get("audio_url"):
@@ -2830,38 +3062,69 @@ class PipelineError(Exception):
     """Friendly error raised inside the aligned-audio pipeline; surfaced to the user."""
 
 
-def _aligned_audio_prepare(
-    article_id: str, request: AlignedAudioRequest
-) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], dict[str, Any], str, str, str, Path, Path, str]:
-    """Common validation: article, items, configs, cache key. Returns context."""
+def _aligned_audio_prepare(article_id: str, request: AlignedAudioRequest) -> dict[str, Any]:
+    """Common validation: article, items, provider configs, cache key. Returns a
+    context dict consumed by the provider-specific pipelines."""
     article = find_article(article_id)
     paragraphs = article.get("cleaned_paragraphs") or article.get("paragraphs") or []
     if not paragraphs:
         raise HTTPException(400, "文章暂无可用文本，请先完成文本检查。")
     settings = load_settings()
     provider = task_provider("audio", settings=settings)
-    if provider != "qwen":
-        raise HTTPException(400, "整篇时间轴音频需要 Qwen TTS 和 Qwen ASR。")
     items = listening_sentence_items(article)
     if not items:
         raise HTTPException(400, "无法切分出句子。")
-    tts_config = qwen_tts_config()
-    asr_config = qwen_asr_config()
-    voice = (request.voice or tts_config["voice"]).strip() or "Ethan"
-    language_type = (request.language_type or tts_config["language_type"]).strip() or "English"
+
+    if provider == "minimax":
+        tts_config = minimax_tts_config()
+        asr_config = {"model": "minimax-subtitle"}
+        voice = (request.voice or tts_config["voice"]).strip() or tts_config["voice"]
+        language_type = (request.language_type or tts_config["language_boost"]).strip() or tts_config["language_boost"]
+    elif provider == "qwen":
+        tts_config = qwen_tts_config()
+        asr_config = qwen_asr_config()
+        voice = (request.voice or tts_config["voice"]).strip() or "Ethan"
+        language_type = (request.language_type or tts_config["language_type"]).strip() or "English"
+    else:
+        raise HTTPException(400, "整篇时间轴音频需要 Qwen 或 MiniMax，请在设置中配置 AI 朗读。")
+
     key = aligned_audio_cache_key(
         article_id,
         items,
-        voice,
+        f"{provider}:{voice}",
         language_type,
         tts_config["model"],
         asr_config["model"],
         enable_words=request.enable_words,
     )
-    audio_url = f"/audio/{key}.wav"
-    audio_path = AUDIO_CACHE_DIR / f"{key}.wav"
-    align_path = AUDIO_CACHE_DIR / f"{key}.align.json"
-    return article, items, tts_config, asr_config, voice, language_type, key, audio_path, align_path, audio_url
+    return {
+        "article": article,
+        "article_id": article_id,
+        "items": items,
+        "provider": provider,
+        "tts_config": tts_config,
+        "asr_config": asr_config,
+        "voice": voice,
+        "language_type": language_type,
+        "key": key,
+        "audio_url": f"/audio/{key}.wav",
+        "audio_path": AUDIO_CACHE_DIR / f"{key}.wav",
+        "align_path": AUDIO_CACHE_DIR / f"{key}.align.json",
+    }
+
+
+def _run_aligned_audio_for_provider(ctx: dict[str, Any], enable_words: bool,
+                                    progress_cb: Callable[[str, int, str], None]) -> dict[str, Any]:
+    if ctx["provider"] == "minimax":
+        return _run_aligned_audio_minimax(
+            ctx["article"], ctx["items"], ctx["tts_config"], ctx["voice"], ctx["language_type"],
+            ctx["audio_path"], ctx["align_path"], ctx["audio_url"], progress_cb,
+        )
+    return _run_aligned_audio_pipeline(
+        ctx["article"], ctx["items"], ctx["tts_config"], ctx["asr_config"],
+        ctx["voice"], ctx["language_type"], ctx["key"], ctx["audio_path"],
+        ctx["align_path"], ctx["audio_url"], enable_words=enable_words, progress_cb=progress_cb,
+    )
 
 
 def _cached_aligned_audio_payload(
@@ -2982,21 +3245,128 @@ def _run_aligned_audio_pipeline(
     }
 
 
+def _run_aligned_audio_minimax(
+    article: dict[str, Any],
+    items: list[dict[str, Any]],
+    tts_config: dict[str, Any],
+    voice: str,
+    language_boost: str,
+    audio_path: Path,
+    align_path: Path,
+    audio_url: str,
+    progress_cb: Callable[[str, int, str], None],
+) -> dict[str, Any]:
+    """Whole-article TTS via MiniMax with its own sentence subtitles for the
+    timeline — no OSS/ASR round-trip. Synthesises the entire article in one
+    request when it fits MiniMax's character limit, otherwise falls back to the
+    sentence-chunking used by the Qwen pipeline and offsets each chunk's
+    subtitles by its position in the concatenated audio."""
+    progress_cb("prep", 4, "准备文本…")
+    config = {**tts_config, "voice": voice, "language_boost": language_boost}
+    max_chars = config.get("max_chars", 9000)
+
+    full_text = chunk_text(items)
+    if not full_text:
+        raise PipelineError("没有可朗读的文本。")
+
+    wav_chunks: list[bytes] = []
+    chunk_subs: list[list[dict[str, Any]]] = []
+
+    if len(full_text) <= max_chars:
+        chunks = [items]
+        progress_cb("tts", 30, "MiniMax 合成整篇语音…")
+        audio_bytes_chunk, subs, meta = _minimax_t2a(full_text, config, subtitle_enable=True)
+        if audio_bytes_chunk[:4] != b"RIFF":
+            raise PipelineError("MiniMax 返回的不是 WAV 音频，无法生成时间轴。")
+        wav_chunks.append(audio_bytes_chunk)
+        chunk_subs.append(subs)
+    else:
+        chunks = chunk_sentences_for_tts(items, max_chars=max_chars)
+        total_chunks = len(chunks)
+        meta = {}
+        for i, group in enumerate(chunks):
+            pct = 5 + int(45 * i / max(1, total_chunks))
+            progress_cb("tts", pct, f"MiniMax 合成语音 {i + 1}/{total_chunks} 段…")
+            audio_bytes_chunk, subs, meta = _minimax_t2a(chunk_text(group), config, subtitle_enable=True)
+            if audio_bytes_chunk[:4] != b"RIFF":
+                raise PipelineError("MiniMax 返回的不是 WAV 音频，无法生成时间轴。")
+            wav_chunks.append(audio_bytes_chunk)
+            chunk_subs.append(subs)
+
+    progress_cb("concat", 75, "拼接并写入音频文件…")
+    audio_bytes, chunk_offsets_ms = concat_wav_many(wav_chunks)
+    AUDIO_CACHE_DIR.mkdir(exist_ok=True)
+    audio_path.write_bytes(audio_bytes)
+
+    subtitles: list[dict[str, Any]] = []
+    for offset, subs in zip(chunk_offsets_ms, chunk_subs):
+        for s in subs:
+            subtitles.append({
+                "text": s["text"],
+                "begin_ms": s["begin_ms"] + offset,
+                "end_ms": s["end_ms"] + offset,
+                "words": [],
+            })
+
+    total_ms = wav_duration_ms(audio_bytes)
+    progress_cb("align", 92, "对齐原文句子…")
+    if subtitles:
+        alignments = align_asr_to_original(items, subtitles, chunks, chunk_offsets_ms, total_ms)
+    else:
+        # No subtitles returned — fall back to even time distribution so the
+        # listening view still scrolls roughly in sync.
+        alignments = _even_time_alignment(items, total_ms)
+
+    payload = {
+        "alignments": alignments,
+        "asr_sentences": subtitles,
+        "meta": {
+            **meta,
+            "provider": "minimax",
+            "chunks": len(chunks),
+            "subtitle_sentences": len(subtitles),
+        },
+    }
+
+    progress_cb("cleanup", 98, "保存缓存…")
+    save_json(align_path, payload)
+    return {
+        "article_id": article["id"] if "id" in article else "",
+        "title": article.get("title", ""),
+        "audio_url": audio_url,
+        "cached": False,
+        **payload,
+    }
+
+
+def _even_time_alignment(items: list[dict[str, Any]], total_ms: int) -> list[dict[str, Any]]:
+    n = max(1, len(items))
+    span = total_ms / n if total_ms else 0
+    out: list[dict[str, Any]] = []
+    for i, item in enumerate(items):
+        out.append({
+            "index": item["index"],
+            "para": item["para"],
+            "text": item["text"],
+            "asr_text": "",
+            "begin_ms": int(i * span),
+            "end_ms": int((i + 1) * span),
+            "confidence": 0.0,
+            "words": [],
+        })
+    return out
+
+
 @app.post("/api/articles/{article_id}/listening/aligned-audio")
 def listening_aligned_audio(article_id: str, request: AlignedAudioRequest) -> dict[str, Any]:
-    article, items, tts_config, asr_config, voice, language_type, key, audio_path, align_path, audio_url = (
-        _aligned_audio_prepare(article_id, request)
-    )
-    if not request.refresh and audio_path.exists() and align_path.exists():
-        cached = _cached_aligned_audio_payload(article, article_id, audio_url, align_path)
+    ctx = _aligned_audio_prepare(article_id, request)
+    if not request.refresh and ctx["audio_path"].exists() and ctx["align_path"].exists():
+        cached = _cached_aligned_audio_payload(ctx["article"], article_id, ctx["audio_url"], ctx["align_path"])
         if cached:
             return cached
     try:
-        result = _run_aligned_audio_pipeline(
-            article, items, tts_config, asr_config, voice, language_type,
-            key, audio_path, align_path, audio_url,
-            enable_words=request.enable_words,
-            progress_cb=lambda *_args, **_kw: None,
+        result = _run_aligned_audio_for_provider(
+            ctx, enable_words=request.enable_words, progress_cb=lambda *_args, **_kw: None,
         )
     except PipelineError as exc:
         raise HTTPException(400, str(exc))
@@ -3006,29 +3376,24 @@ def listening_aligned_audio(article_id: str, request: AlignedAudioRequest) -> di
 
 @app.post("/api/articles/{article_id}/listening/aligned-audio/start")
 def listening_aligned_audio_start(article_id: str, request: AlignedAudioRequest) -> dict[str, Any]:
-    article, items, tts_config, asr_config, voice, language_type, key, audio_path, align_path, audio_url = (
-        _aligned_audio_prepare(article_id, request)
-    )
-    if not request.refresh and audio_path.exists() and align_path.exists():
-        cached = _cached_aligned_audio_payload(article, article_id, audio_url, align_path)
+    ctx = _aligned_audio_prepare(article_id, request)
+    if not request.refresh and ctx["audio_path"].exists() and ctx["align_path"].exists():
+        cached = _cached_aligned_audio_payload(ctx["article"], article_id, ctx["audio_url"], ctx["align_path"])
         if cached:
             return {"cached": True, "result": cached}
 
-    existing = find_job_by_key("aligned_audio", key)
+    existing = find_job_by_key("aligned_audio", ctx["key"])
     if existing:
         return {"cached": False, "task_id": existing["task_id"], "reused": True}
 
-    task_id = create_job("aligned_audio", key=key)
+    task_id = create_job("aligned_audio", key=ctx["key"])
 
     def _worker() -> None:
         def cb(stage: str, pct: int, msg: str) -> None:
             update_job(task_id, stage=stage, pct=pct, msg=msg)
         try:
-            result = _run_aligned_audio_pipeline(
-                article, items, tts_config, asr_config, voice, language_type,
-                key, audio_path, align_path, audio_url,
-                enable_words=request.enable_words,
-                progress_cb=cb,
+            result = _run_aligned_audio_for_provider(
+                ctx, enable_words=request.enable_words, progress_cb=cb,
             )
             result["article_id"] = article_id
             finish_job(task_id, result=result)
