@@ -2500,23 +2500,7 @@ def update_settings(request: ModelSettingsRequest) -> dict[str, Any]:
     return settings_response()
 
 
-@app.post("/api/settings/test/{provider}")
-def test_provider(provider: str, request: ModelSettingsRequest | None = None) -> dict[str, Any]:
-    if provider not in AI_PROVIDERS:
-        raise HTTPException(404, "Unknown provider")
-    overrides = request.model_dump() if request else {}
-    fallback = {"ok": False, "message": "未配置 API key，当前会使用本地降级分析。"}
-    result, meta = call_ai_json(
-        provider,
-        "Return JSON only.",
-        "Return {\"ok\": true, \"message\": \"connected\"}.",
-        fallback,
-        overrides,
-        prefer_primary=False,
-    )
-    return {"result": result, "meta": meta}
-
-
+# Declared before the {provider} route below so the static path wins the match.
 @app.post("/api/settings/test/minimax")
 def test_minimax(request: ModelSettingsRequest | None = None) -> dict[str, Any]:
     overrides = request.model_dump() if request else {}
@@ -2533,6 +2517,23 @@ def test_minimax(request: ModelSettingsRequest | None = None) -> dict[str, Any]:
         "model": meta["model"],
         "base_url": meta["base_url"],
     }
+
+
+@app.post("/api/settings/test/{provider}")
+def test_provider(provider: str, request: ModelSettingsRequest | None = None) -> dict[str, Any]:
+    if provider not in AI_PROVIDERS:
+        raise HTTPException(404, "Unknown provider")
+    overrides = request.model_dump() if request else {}
+    fallback = {"ok": False, "message": "未配置 API key，当前会使用本地降级分析。"}
+    result, meta = call_ai_json(
+        provider,
+        "Return JSON only.",
+        "Return {\"ok\": true, \"message\": \"connected\"}.",
+        fallback,
+        overrides,
+        prefer_primary=False,
+    )
+    return {"result": result, "meta": meta}
 
 
 def synthesize_speech(text: str, voice: str | None = None, language_type: str | None = None,
