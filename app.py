@@ -1479,11 +1479,18 @@ def concat_wav(wav1: bytes, wav2: bytes, silence_ms: int = 380) -> bytes:
     return out.getvalue()
 
 
-def concat_wav_many(chunks: list[bytes], silence_ms: int = 240) -> bytes:
+def concat_wav_many(chunks: list[bytes], silence_ms: int = 240) -> tuple[bytes, list[int]]:
+    """Concatenate WAV chunks with a silence gap between them.
+
+    Returns ``(audio_bytes, offsets_ms)`` where ``offsets_ms[c]`` is the exact start
+    time of chunk ``c`` inside the concatenated audio. These offsets are drift-free
+    anchors (they come from sample counts, not ASR) for the listening timeline.
+    The audio bytes are identical to the previous behaviour.
+    """
     if not chunks:
         raise HTTPException(400, "没有可拼接的音频。")
     if len(chunks) == 1:
-        return chunks[0]
+        return chunks[0], [0]
     pcm_parts: list[bytes] = []
     rate = chans = width = 0
     for i, chunk in enumerate(chunks):
@@ -1496,14 +1503,30 @@ def concat_wav_many(chunks: list[bytes], silence_ms: int = 240) -> bytes:
             elif (chunk_rate, chunk_chans, chunk_width) != (rate, chans, width):
                 raise HTTPException(502, "TTS 返回的音频格式不一致，无法拼接。")
             pcm_parts.append(wav_file.readframes(wav_file.getnframes()))
-    silence = b"\x00" * (int(rate * silence_ms / 1000) * chans * width)
+    silence_frames = int(rate * silence_ms / 1000)
+    silence = b"\x00" * (silence_frames * chans * width)
+    bytes_per_frame = max(1, chans * width)
+
+    offsets_ms: list[int] = []
+    acc_frames = 0
+    for part in pcm_parts:
+        offsets_ms.append(int(acc_frames / rate * 1000) if rate else 0)
+        acc_frames += len(part) // bytes_per_frame + silence_frames
+
     out = io.BytesIO()
     with wave.open(out, "wb") as wo:
         wo.setnchannels(chans)
         wo.setsampwidth(width)
         wo.setframerate(rate)
         wo.writeframes(silence.join(pcm_parts))
-    return out.getvalue()
+    return out.getvalue(), offsets_ms
+
+
+def wav_duration_ms(audio_bytes: bytes) -> int:
+    with wave.open(io.BytesIO(audio_bytes), "rb") as wav_file:
+        rate = wav_file.getframerate()
+        frames = wav_file.getnframes()
+    return int(frames / rate * 1000) if rate else 0
 
 
 def speech_result_to_bytes(tts: dict[str, Any]) -> bytes:
@@ -1528,9 +1551,12 @@ def listening_sentence_items(article: dict[str, Any]) -> list[dict[str, Any]]:
     return items
 
 
-def chunk_sentences_for_tts(items: list[dict[str, Any]], max_chars: int = 1450) -> list[str]:
-    chunks: list[str] = []
-    current: list[str] = []
+def chunk_sentences_for_tts(items: list[dict[str, Any]], max_chars: int = 1450) -> list[list[dict[str, Any]]]:
+    """Group whole sentences into ≤max_chars chunks. Returns the sentence items per
+    chunk (not joined text) so callers can map each chunk back to its sentences for
+    timeline anchoring. Use ``chunk_text`` to get the string fed to TTS."""
+    chunks: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
     current_len = 0
     for item in items:
         sentence = clean_text(item["text"])
@@ -1538,15 +1564,19 @@ def chunk_sentences_for_tts(items: list[dict[str, Any]], max_chars: int = 1450) 
             continue
         extra = len(sentence) + (1 if current else 0)
         if current and current_len + extra > max_chars:
-            chunks.append(" ".join(current))
-            current = [sentence]
+            chunks.append(current)
+            current = [item]
             current_len = len(sentence)
         else:
-            current.append(sentence)
+            current.append(item)
             current_len += extra
     if current:
-        chunks.append(" ".join(current))
+        chunks.append(current)
     return chunks
+
+
+def chunk_text(group: list[dict[str, Any]]) -> str:
+    return " ".join(filter(None, (clean_text(item["text"]) for item in group)))
 
 
 def aligned_audio_cache_key(
@@ -1559,7 +1589,7 @@ def aligned_audio_cache_key(
     enable_words: bool = True,
 ) -> str:
     text_hash = stable_id(*(item["text"] for item in items[:300]), str(len(items)))
-    payload = f"{article_id}|{text_hash}|{voice}|{language_type}|{tts_model}|{asr_model}|words:{int(enable_words)}|v2"
+    payload = f"{article_id}|{text_hash}|{voice}|{language_type}|{tts_model}|{asr_model}|words:{int(enable_words)}|v3"
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
@@ -1834,7 +1864,178 @@ def align_asr_words_to_original(items: list[dict[str, Any]], asr_sentences: list
     return alignments
 
 
-def align_asr_to_original(items: list[dict[str, Any]], asr_sentences: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _empty_alignment(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "index": item["index"],
+        "para": item["para"],
+        "text": item["text"],
+        "asr_text": "",
+        "begin_ms": None,
+        "end_ms": None,
+        "confidence": 0.0,
+        "words": [],
+    }
+
+
+def _chunk_for_time(windows: list[tuple[int, int]], ms: int) -> int:
+    for c, (start, end) in enumerate(windows):
+        if start <= ms < end:
+            return c
+    if windows and ms < windows[0][0]:
+        return 0
+    return max(0, len(windows) - 1)
+
+
+def _fill_word_times_window(wb: list[Any], we: list[Any], start: int, end: int) -> None:
+    """Fill missing (None) per-word times by linear interpolation, clamped to
+    [start, end]. Begins become monotonic and each word's end is the next word's
+    begin (contiguous), so the highlight never sits in a dead zone."""
+    n = len(wb)
+    if n == 0:
+        return
+    span = max(1, end - start)
+    known = [k for k in range(n) if wb[k] is not None]
+    t: list[float] = [0.0] * n
+    if not known:
+        for k in range(n):
+            t[k] = start + span * k / n
+    else:
+        for k in known:
+            t[k] = float(wb[k])
+        first = known[0]
+        for k in range(first):
+            t[k] = start + (t[first] - start) * (k / first if first else 0)
+        for a, b in zip(known, known[1:]):
+            for k in range(a + 1, b):
+                t[k] = t[a] + (t[b] - t[a]) * ((k - a) / (b - a))
+        last = known[-1]
+        for k in range(last + 1, n):
+            t[k] = t[last] + (end - t[last]) * ((k - last) / (n - last))
+    for k in range(n):
+        wb[k] = int(min(max(t[k], start), end))
+    for k in range(n):
+        nxt = t[k + 1] if k + 1 < n else end
+        we[k] = int(min(max(nxt, wb[k] + 1), end))
+
+
+def _align_group(group: list[dict[str, Any]], words: list[dict[str, Any]], start: int, end: int) -> list[dict[str, Any]]:
+    """Align one TTS chunk's sentences against the ASR words inside its audio window.
+    difflib's equal-blocks give exact word anchors; gaps are interpolated within the
+    window, so a sentence can never escape its chunk."""
+    tokens: list[str] = []
+    counts: list[int] = []
+    for item in group:
+        toks = normalize_for_alignment(item["text"]).split()
+        counts.append(len(toks))
+        tokens.extend(toks)
+    n = len(tokens)
+    if n == 0:
+        return [_empty_alignment(item) for item in group]
+
+    wb: list[Any] = [None] * n
+    we: list[Any] = [None] * n
+    hit = [False] * n
+    if words:
+        sm = difflib.SequenceMatcher(None, tokens, [w["norm"] for w in words], autojunk=False)
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag != "equal":
+                continue
+            for k in range(i2 - i1):
+                wb[i1 + k] = words[j1 + k]["begin_ms"]
+                we[i1 + k] = words[j1 + k]["end_ms"]
+                hit[i1 + k] = True
+    _fill_word_times_window(wb, we, start, end)
+
+    out: list[dict[str, Any]] = []
+    pos = 0
+    for ci, item in enumerate(group):
+        cnt = counts[ci]
+        if cnt == 0:
+            out.append(_empty_alignment(item))
+            continue
+        seg = range(pos, pos + cnt)
+        begin = min(wb[k] for k in seg)
+        finish = max(we[k] for k in seg)
+        hits = sum(1 for k in seg if hit[k])
+        pos += cnt
+        out.append({
+            "index": item["index"],
+            "para": item["para"],
+            "text": item["text"],
+            "asr_text": "",
+            "begin_ms": int(begin),
+            "end_ms": int(max(finish, begin + 1)),
+            "confidence": round(hits / cnt, 3),
+            "words": [],
+        })
+    return out
+
+
+def _enforce_monotonic(alignments: list[dict[str, Any]], total_ms: int) -> None:
+    prev_end = 0
+    for a in alignments:
+        if a.get("begin_ms") is None:
+            continue
+        begin = max(int(a["begin_ms"]), prev_end)
+        end = int(a["end_ms"]) if a.get("end_ms") is not None else begin + 1
+        if total_ms:
+            begin = min(begin, max(0, total_ms - 1))
+            end = min(end, total_ms)
+        if end <= begin:
+            end = begin + 1
+        a["begin_ms"], a["end_ms"] = begin, end
+        prev_end = end
+
+
+def align_with_chunk_anchors(
+    items: list[dict[str, Any]],
+    asr_sentences: list[dict[str, Any]],
+    chunk_groups: list[list[dict[str, Any]]],
+    chunk_offsets_ms: list[int],
+    total_ms: int,
+) -> list[dict[str, Any]]:
+    """Drift-free sentence timeline. Each TTS chunk owns an exact audio window
+    [offset_c, offset_{c+1}); ASR words are bucketed into their chunk by time and
+    aligned within that window. A local ASR error can never push a sentence outside
+    its chunk, so the highlight cannot drift across the article."""
+    word_items = _asr_word_timings(asr_sentences)
+    if not word_items or not chunk_groups:
+        return []
+
+    windows: list[tuple[int, int]] = []
+    for c in range(len(chunk_groups)):
+        start = chunk_offsets_ms[c] if c < len(chunk_offsets_ms) else 0
+        end = chunk_offsets_ms[c + 1] if c + 1 < len(chunk_offsets_ms) else total_ms
+        if end <= start:
+            end = start + 1
+        windows.append((start, end))
+
+    buckets: list[list[dict[str, Any]]] = [[] for _ in chunk_groups]
+    for w in word_items:
+        buckets[_chunk_for_time(windows, w["begin_ms"])].append(w)
+
+    by_index: dict[int, dict[str, Any]] = {}
+    for c, group in enumerate(chunk_groups):
+        start, end = windows[c]
+        for a in _align_group(group, buckets[c], start, end):
+            by_index[a["index"]] = a
+
+    out = [by_index.get(item["index"]) or _empty_alignment(item) for item in items]
+    _enforce_monotonic(out, total_ms)
+    return out
+
+
+def align_asr_to_original(
+    items: list[dict[str, Any]],
+    asr_sentences: list[dict[str, Any]],
+    chunk_groups: list[list[dict[str, Any]]] | None = None,
+    chunk_offsets_ms: list[int] | None = None,
+    total_ms: int | None = None,
+) -> list[dict[str, Any]]:
+    if chunk_groups and chunk_offsets_ms and total_ms:
+        anchored = align_with_chunk_anchors(items, asr_sentences, chunk_groups, chunk_offsets_ms, total_ms)
+        if anchored:
+            return anchored
     word_alignments = align_asr_words_to_original(items, asr_sentences)
     valid_word_alignments = [
         item for item in word_alignments
@@ -2561,17 +2762,17 @@ def _run_aligned_audio_pipeline(
 
     wav_chunks: list[bytes] = []
     total_chunks = len(chunks)
-    for i, chunk in enumerate(chunks):
+    for i, group in enumerate(chunks):
         pct = 5 + int(35 * i / max(1, total_chunks))
         progress_cb("tts", pct, f"合成语音 {i + 1}/{total_chunks} 段…")
-        tts = synthesize_qwen_speech(chunk, voice, language_type)
+        tts = synthesize_qwen_speech(chunk_text(group), voice, language_type)
         audio_bytes_chunk = speech_result_to_bytes(tts)
         if audio_bytes_chunk[:4] != b"RIFF":
             raise PipelineError("当前 TTS 返回的不是 WAV 音频，无法拼接整篇音频。")
         wav_chunks.append(audio_bytes_chunk)
 
     progress_cb("concat", 42, "拼接并写入音频文件…")
-    audio_bytes = concat_wav_many(wav_chunks)
+    audio_bytes, chunk_offsets_ms = concat_wav_many(wav_chunks)
     AUDIO_CACHE_DIR.mkdir(exist_ok=True)
     audio_path.write_bytes(audio_bytes)
 
@@ -2618,7 +2819,8 @@ def _run_aligned_audio_pipeline(
         raise PipelineError("Qwen ASR 没有返回可用的句级时间戳。")
 
     progress_cb("align", 95, "对齐原文句子…")
-    alignments = align_asr_to_original(items, asr_sentences)
+    total_ms = wav_duration_ms(audio_bytes)
+    alignments = align_asr_to_original(items, asr_sentences, chunks, chunk_offsets_ms, total_ms)
     payload = {
         "alignments": alignments,
         "asr_sentences": asr_sentences,
