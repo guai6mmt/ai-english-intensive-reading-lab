@@ -36,8 +36,9 @@ const state = {
   reading: { picks: {} },
   dictation: { rounds: {}, speeds: {}, plays: {}, durations: {} },
   writing: { task: "", draft: "" },
-  collapsedSources: new Set(),
+  expandedSources: new Set(),
   collapsedSections: new Set(),
+  libBook: null,
 };
 
 // ───────── Utilities ─────────
@@ -168,6 +169,25 @@ function saveTweaks() {
   try { localStorage.setItem(TWEAK_KEY, JSON.stringify(state.ui)); } catch {}
 }
 
+// Sidebar collapse memory: sources are collapsed by default (opt-in expand),
+// sections are expanded by default (opt-out collapse). Both persist across visits.
+const COLLAPSE_KEY = "english-lab-sidebar-collapse-v1";
+function loadCollapseState() {
+  try {
+    const d = JSON.parse(localStorage.getItem(COLLAPSE_KEY) || "{}");
+    state.expandedSources = new Set(asArray(d.expandedSources));
+    state.collapsedSections = new Set(asArray(d.collapsedSections));
+  } catch { /* keep empty defaults */ }
+}
+function saveCollapseState() {
+  try {
+    localStorage.setItem(COLLAPSE_KEY, JSON.stringify({
+      expandedSources: [...state.expandedSources],
+      collapsedSections: [...state.collapsedSections],
+    }));
+  } catch {}
+}
+
 function applyTweaks() {
   const root = document.documentElement;
   root.dataset.theme = state.ui.theme || "";
@@ -199,18 +219,45 @@ function syncTweaksUI() {
 }
 
 // ───────── Boot ─────────
+function showLibrarySkeleton() {
+  const side = $("articleList");
+  if (side && !side.children.length) {
+    side.innerHTML = `<div class="sk-side">${"<div class='sk-row'></div>".repeat(6)}</div>`;
+  }
+  const grid = $("libGrid");
+  if (grid && state.view === "library" && !grid.children.length) {
+    grid.innerHTML = `<div class="sk-grid">${"<div class='sk-card'></div>".repeat(6)}</div>`;
+  }
+}
+
 async function refreshAll() {
+  // Phase 1 — library only: paint the sidebar + shelf as soon as it arrives,
+  // instead of blocking the first paint on five more requests.
+  showLibrarySkeleton();
   try {
-    const [library, vocab, outputs, progress, config, settings] = await Promise.all([
-      api("/api/library"),
+    const library = await api("/api/library");
+    state.library = library.library || { sources: [] };
+    state.summary = library.summary || {};
+  } catch (error) {
+    console.error(error);
+    $("articleList").innerHTML = `<div class="error-state">${escapeHtml(error.message)}</div>`;
+    return;
+  }
+  renderSidebar();
+  renderLibraryView();
+  // Phase 2 — secondary data loads in the background; patch counts/dots/meta later.
+  loadSecondaryData();
+}
+
+async function loadSecondaryData() {
+  try {
+    const [vocab, outputs, progress, config, settings] = await Promise.all([
       api("/api/vocabulary"),
       api("/api/outputs"),
       api("/api/progress"),
       api("/api/config"),
       api("/api/settings"),
     ]);
-    state.library = library.library || { sources: [] };
-    state.summary = library.summary || {};
     state.vocabulary = asArray(vocab.items);
     state.outputs = asArray(outputs.items);
     state.progress = progress.items && typeof progress.items === "object" && !Array.isArray(progress.items) ? progress.items : {};
@@ -218,11 +265,10 @@ async function refreshAll() {
     state.settings = settings;
   } catch (error) {
     console.error(error);
-    $("articleList").innerHTML = `<div class="error-state">${escapeHtml(error.message)}</div>`;
     return;
   }
-  renderSidebar();
   renderAiFootMeta();
+  renderSidebar();
   renderLibraryView();
   fillSettingsForm();
   if (state.currentArticle) {
@@ -278,7 +324,7 @@ function renderSidebar() {
   $("articleList").innerHTML = [...sources.values()].map((src) => {
     const label = (src.filename || "未知来源").replace(/\.[^.]+$/, "");
     const srcKey = src.sourceId || src.filename || "unknown";
-    const srcCollapsed = state.collapsedSources.has(srcKey);
+    const srcCollapsed = !state.expandedSources.has(srcKey);
     const totalCount = [...src.sections.values()].reduce((s, a) => s + a.length, 0);
 
     const sectionsHtml = srcCollapsed ? "" : [...src.sections.entries()].map(([secName, secArticles]) => {
@@ -349,13 +395,72 @@ function filteredArticles() {
   return articles;
 }
 
-// ───────── Library view ─────────
+// ───────── Library view (shelf → book → articles) ─────────
+function hueFromString(str) {
+  let h = 0;
+  const s = String(str);
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+  return h;
+}
+
+function setLibHeader(title, subline, withBack) {
+  const eyebrow = document.querySelector("#libraryView .eyebrow");
+  const h1 = document.querySelector("#libraryView .lib-h h1");
+  if (eyebrow) eyebrow.textContent = withBack ? "Book" : "Library";
+  if (h1) {
+    h1.innerHTML = withBack
+      ? `<span class="lib-back crumb-link" data-go="library" title="返回书架">‹</span> ${escapeHtml(title)}`
+      : escapeHtml(title);
+  }
+  $("libSubline").textContent = subline;
+}
+
+function articleCardHtml(a) {
+  const stats = a.stats || {};
+  const diff = stats.cefr || "?";
+  const words = stats.word_count || 0;
+  const minutes = stats.reading_minutes || Math.max(1, Math.round(words / 170));
+  const progress = state.progress[a.id];
+  const pct = progress?.status === "completed" ? 1 : (progress ? 0.5 : 0);
+  const topic = asArray(a.ai_tags?.topics)[0] || "";
+  return `<div class="card" data-open-article="${escapeHtml(a.id)}">
+    <div class="src">${escapeHtml(a.section || "")}${topic ? " · " + escapeHtml(topic) : ""}</div>
+    <h3>${escapeHtml(a.title)}</h3>
+    <div class="excerpt">${escapeHtml(a.subtitle || a.section || "—")}</div>
+    <div class="row">
+      <span class="tag diff" data-level="${escapeHtml(diff)}" style="font-size: 10.5px; padding: 1px 6px;">${escapeHtml(diff)}</span>
+      <span>${formatNumber(words)} w</span>
+      <span>·</span>
+      <span>${minutes} min</span>
+      <span style="flex: 1;"></span>
+      <span>${Math.round(pct * 100)}%</span>
+    </div>
+    <div class="row" style="border-top: 0; padding: 0; margin: 0;">
+      <div class="pg" style="margin-left: 0;"><span style="width: ${(pct * 100).toFixed(0)}%;"></span></div>
+    </div>
+  </div>`;
+}
+
+function bookCardHtml(src) {
+  const title = (src.filename || "未命名来源").replace(/\.[^.]+$/, "");
+  const count = src.article_count ?? asArray(src.articles).length;
+  const secs = asArray(src.sections).length;
+  const cover = src.cover_url
+    ? `<div class="book-cover"><img src="${escapeHtml(src.cover_url)}" alt="" loading="lazy" /></div>`
+    : `<div class="book-cover book-cover-ph" style="--ph-hue:${hueFromString(title)}"><span>${escapeHtml(title)}</span></div>`;
+  return `<div class="book-card" data-open-book="${escapeHtml(src.id)}" title="${escapeHtml(title)}">
+    ${cover}
+    <div class="book-title">${escapeHtml(title)}</div>
+    <div class="book-sub">${count} 篇${secs ? ` · ${secs} 模块` : ""}</div>
+  </div>`;
+}
+
 function renderLibraryView() {
+  renderCrumbs();
+  const sources = asArray(state.library.sources);
   const articles = allArticles();
   const studiedCount = Object.keys(state.progress || {}).length;
   const unmastered = state.vocabulary.filter((v) => !v.recognise && !v.write).length;
-  const lastOpened = articles.map((a) => a.last_opened_at).filter(Boolean).sort().reverse()[0];
-  $("libSubline").textContent = `${articles.length} 篇文章 · ${unmastered} 个未掌握生词等待复习${lastOpened ? ` · 上次学习 ${timeAgo(lastOpened)}` : ""}`;
 
   $("libStats").innerHTML = `
     <div class="stat"><span class="l">本周精读</span><span class="n">${studiedCount}</span></div>
@@ -363,40 +468,60 @@ function renderLibraryView() {
     <div class="stat"><span class="l">待复习生词</span><span class="n">${unmastered}</span></div>
   `;
 
-  const list = filteredArticles();
-  if (!list.length) {
-    $("libGrid").innerHTML = `<div class="lib-empty">
-      <h3>文章库是空的</h3>
-      <p>点击右上角"导入 EPUB / DOCX / TXT"添加文章。</p>
-    </div>`;
+  const grid = $("libGrid");
+  const query = state.searchQuery.trim();
+
+  // Search → flat results across every book.
+  if (query) {
+    setLibHeader("搜索结果", `匹配 “${query}” 的文章`, false);
+    grid.classList.remove("book-mode");
+    const list = filteredArticles();
+    grid.innerHTML = list.length
+      ? list.map(articleCardHtml).join("")
+      : `<div class="lib-empty"><h3>没有匹配的文章</h3><p>换个关键词试试。</p></div>`;
     return;
   }
 
-  $("libGrid").innerHTML = list.map((a) => {
-    const stats = a.stats || {};
-    const diff = stats.cefr || "?";
-    const words = stats.word_count || 0;
-    const minutes = stats.reading_minutes || Math.max(1, Math.round(words / 170));
-    const progress = state.progress[a.id];
-    const pct = progress?.status === "completed" ? 1 : (progress ? 0.5 : 0);
-    const topic = asArray(a.ai_tags?.topics)[0] || "";
-    return `<div class="card" data-open-article="${escapeHtml(a.id)}">
-      <div class="src">${escapeHtml(a.sourceFilename?.replace(/\.[^.]+$/, "") || "")}${topic ? " · " + escapeHtml(topic) : ""}</div>
-      <h3>${escapeHtml(a.title)}</h3>
-      <div class="excerpt">${escapeHtml(a.subtitle || a.section || "—")}</div>
-      <div class="row">
-        <span class="tag diff" data-level="${escapeHtml(diff)}" style="font-size: 10.5px; padding: 1px 6px;">${escapeHtml(diff)}</span>
-        <span>${formatNumber(words)} w</span>
-        <span>·</span>
-        <span>${minutes} min</span>
-        <span style="flex: 1;"></span>
-        <span>${Math.round(pct * 100)}%</span>
-      </div>
-      <div class="row" style="border-top: 0; padding: 0; margin: 0;">
-        <div class="pg" style="margin-left: 0;"><span style="width: ${(pct * 100).toFixed(0)}%;"></span></div>
-      </div>
+  // Book detail → that book's articles grouped by section.
+  if (state.libBook) {
+    const src = sources.find((s) => s.id === state.libBook);
+    if (src) { renderBookDetail(src); return; }
+    state.libBook = null;
+  }
+
+  // Shelf → one card per imported book.
+  setLibHeader("书架", `${sources.length} 本书 · ${articles.length} 篇文章`, false);
+  if (!sources.length) {
+    grid.classList.remove("book-mode");
+    grid.innerHTML = `<div class="lib-empty">
+      <h3>书架是空的</h3>
+      <p>点击右上角"导入 EPUB / DOCX / TXT"添加你的第一本书。</p>
     </div>`;
-  }).join("");
+    return;
+  }
+  grid.classList.add("book-mode");
+  grid.innerHTML = sources.map(bookCardHtml).join("");
+}
+
+function renderBookDetail(src) {
+  const title = (src.filename || "未命名来源").replace(/\.[^.]+$/, "");
+  const arts = allArticles().filter((a) => a.sourceId === src.id);
+  setLibHeader(title, `${arts.length} 篇 · ${asArray(src.sections).length} 模块`, true);
+
+  const groups = new Map();
+  arts.forEach((a) => {
+    const sec = a.section || "Articles";
+    if (!groups.has(sec)) groups.set(sec, []);
+    groups.get(sec).push(a);
+  });
+
+  const grid = $("libGrid");
+  grid.classList.remove("book-mode");
+  grid.innerHTML = [...groups.entries()].map(([sec, list]) => `
+    <div class="lib-section">
+      <h3 class="lib-section-h">${escapeHtml(sec)} <span class="muted">${list.length}</span></h3>
+      <div class="lib-section-grid">${list.map(articleCardHtml).join("")}</div>
+    </div>`).join("");
 }
 
 // ───────── Article open ─────────
@@ -404,6 +529,11 @@ async function openArticle(articleId) {
   try {
     const data = await api(`/api/articles/${articleId}`);
     state.currentArticle = data.article;
+    // Auto-expand this article's book in the sidebar so it stays visible.
+    if (state.currentArticle?.source_id) {
+      state.expandedSources.add(state.currentArticle.source_id);
+      saveCollapseState();
+    }
     state.longSentences = asArray(state.currentArticle.long_sentence_analysis);
     state.readingQuestions = normalizeReadingQuestions(state.currentArticle.reading_questions);
     state.dictationItems = normalizeDictationItems(state.currentArticle.dictation_items);
@@ -441,6 +571,7 @@ function showStudyView() {
 
 function showLibraryView() {
   state.view = "library";
+  state.libBook = null;
   $("studyView").classList.add("hidden");
   $("libraryView").classList.remove("hidden");
   $("favoriteBtn").hidden = true;
@@ -472,7 +603,13 @@ function renderArticleHeader() {
 
 function renderCrumbs() {
   if (state.view === "library") {
-    $("crumbs").innerHTML = `<span class="crumb-link" data-go="library">文章库</span>`;
+    if (state.libBook) {
+      const src = asArray(state.library.sources).find((s) => s.id === state.libBook);
+      const name = (src?.filename || "").replace(/\.[^.]+$/, "");
+      $("crumbs").innerHTML = `<span class="crumb-link" data-go="library">文章库</span><span class="sep">/</span><strong>${escapeHtml(name)}</strong>`;
+    } else {
+      $("crumbs").innerHTML = `<span class="crumb-link" data-go="library">文章库</span>`;
+    }
     return;
   }
   const a = state.currentArticle;
@@ -1564,7 +1701,7 @@ document.addEventListener("click", async (event) => {
   const targetEl = rawTarget instanceof Element ? rawTarget : rawTarget?.parentElement;
   if (!targetEl) return;
   const target = targetEl.closest(
-    "button, [data-open-article], [data-step], [data-tab], [data-list], [data-diff], .sent, [data-say], [data-add-vocab], [data-vocab-imitate], [data-grade-reading], [data-dictation-feedback], [data-toggle-source], [data-go], [data-density], [data-size], [data-theme], [data-round], [data-speed], [data-play-dict], [data-delete-source], .crumb-link"
+    "button, [data-open-article], [data-open-book], [data-step], [data-tab], [data-list], [data-diff], .sent, [data-say], [data-add-vocab], [data-vocab-imitate], [data-grade-reading], [data-dictation-feedback], [data-toggle-source], [data-go], [data-density], [data-size], [data-theme], [data-round], [data-speed], [data-play-dict], [data-delete-source], .crumb-link"
   ) || targetEl;
 
   // Sidebar list switch
@@ -1584,6 +1721,13 @@ document.addEventListener("click", async (event) => {
   // Open article
   if (target.matches("[data-open-article]")) {
     await openArticle(target.dataset.openArticle);
+    return;
+  }
+  // Open a book (shelf → book detail)
+  if (target.matches("[data-open-book]")) {
+    state.libBook = target.dataset.openBook;
+    renderCrumbs();
+    renderLibraryView();
     return;
   }
   // Crumb / library go
@@ -1719,8 +1863,9 @@ document.addEventListener("click", async (event) => {
   }
   if (target.matches("[data-collapse-source]")) {
     const key = target.dataset.collapseSource;
-    if (state.collapsedSources.has(key)) state.collapsedSources.delete(key);
-    else state.collapsedSources.add(key);
+    if (state.expandedSources.has(key)) state.expandedSources.delete(key);
+    else state.expandedSources.add(key);
+    saveCollapseState();
     renderSidebar();
     return;
   }
@@ -1728,6 +1873,7 @@ document.addEventListener("click", async (event) => {
     const key = target.dataset.collapseSection;
     if (state.collapsedSections.has(key)) state.collapsedSections.delete(key);
     else state.collapsedSections.add(key);
+    saveCollapseState();
     renderSidebar();
     return;
   }
@@ -1736,6 +1882,7 @@ document.addEventListener("click", async (event) => {
     if (key) {
       if (state.collapsedSections.has(key)) state.collapsedSections.delete(key);
       else state.collapsedSections.add(key);
+      saveCollapseState();
       renderSidebar();
     }
     return;
@@ -2116,5 +2263,6 @@ function initRailResizer() {
 
 // Boot
 loadTweaks();
+loadCollapseState();
 refreshAll();
 initRailResizer();
