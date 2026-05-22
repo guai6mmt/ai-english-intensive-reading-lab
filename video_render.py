@@ -15,6 +15,9 @@ import re
 from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parent
+TEMPLATE_DIR = ROOT / "video_templates"
+
 # ───────── 设计 token（镜像 theme.jsx）─────────
 
 PALETTES: dict[str, dict[str, str]] = {
@@ -207,6 +210,42 @@ def _doc(body: str, pal: dict[str, str], width: int, height: int) -> str:
     )
 
 
+_FALLBACK_H3_TEMPLATE = """<!doctype html><html><head><meta charset="utf-8"><style>
+*{margin:0;padding:0;box-sizing:border-box}html,body{width:1280px;height:720px;overflow:hidden;background:{{ bg }}}
+body{font-family:{{ sans_en }};color:{{ fg }};-webkit-font-smoothing:antialiased}
+.page{width:100%;height:100%;display:grid;grid-template-columns:1fr 320px;grid-template-rows:auto 1fr auto;gap:0 42px;padding:38px 54px 30px}
+.title{grid-column:1/-1;border-bottom:1px solid {{ fg }};padding-bottom:14px;font-family:{{ serif_en }};font-style:italic;font-size:18px}
+.main{padding-top:30px;display:flex;flex-direction:column;gap:{{ main_gap }}px}.en{font-family:{{ serif_en }};font-size:{{ en_size }}px;line-height:{{ en_leading }}}
+.cn{font-family:{{ serif_cn }};font-size:{{ cn_size }}px;line-height:{{ cn_leading }};opacity:.88}.notes{border-left:1px solid {{ rule }};padding:30px 0 0 22px;overflow:hidden}
+</style></head><body><div class="page"><div class="title">{{ title_en }} · {{ title_cn }}</div><main class="main"><p class="en">{{ sentence_en_html }}</p><p class="cn">{{ sentence_cn }}</p></main><aside class="notes">{{ vocab_html }}</aside></div></body></html>"""
+
+
+_FALLBACK_V3_TEMPLATE = """<!doctype html><html><head><meta charset="utf-8"><style>
+*{margin:0;padding:0;box-sizing:border-box}html,body{width:540px;height:960px;overflow:hidden;background:{{ bg }}}
+body{font-family:{{ sans_en }};color:{{ fg }};-webkit-font-smoothing:antialiased}.page{width:100%;height:100%;display:flex;flex-direction:column;padding:42px 34px 32px}
+.title{border-bottom:1px solid {{ fg }};padding-bottom:16px;font-family:{{ serif_en }};font-style:italic;font-size:21px}.main{flex:1;padding-top:38px;display:flex;flex-direction:column;gap:20px}
+.en{font-family:{{ serif_en }};font-size:{{ en_size }}px;line-height:{{ en_leading }}}.cn{font-family:{{ serif_cn }};font-size:{{ cn_size }}px;line-height:{{ cn_leading }};opacity:.88}
+.vocab{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+</style></head><body><div class="page"><div class="title">{{ title_en }} · {{ title_cn }}</div><main class="main"><p class="en">{{ sentence_en_html }}</p><p class="cn">{{ sentence_cn }}</p></main><section class="vocab">{{ vocab_html }}</section></div></body></html>"""
+
+
+def _load_template(name: str, fallback: str) -> str:
+    try:
+        return (TEMPLATE_DIR / name).read_text(encoding="utf-8")
+    except OSError:
+        return fallback
+
+
+def _render_template(name: str, fallback: str, context: dict[str, Any]) -> str:
+    template = _load_template(name, fallback)
+
+    def replace(match: re.Match[str]) -> str:
+        key = match.group(1)
+        return str(context.get(key, match.group(0)))
+
+    return re.sub(r"{{\s*([A-Za-z0-9_]+)\s*}}", replace, template)
+
+
 def _text_band(text: str, bands: list[tuple[int, float]]) -> float:
     """Pick a font size from length thresholds, keeping full sentences on one frame."""
     n = len(text or "")
@@ -229,59 +268,26 @@ def render_h3(frame: dict[str, Any], pal: dict[str, str]) -> str:
     en_text = s.get("en", "")
     cn_text = s.get("cn", "")
     words = _learning_words(frame.get("words", []), en_text)
-    en_size = _text_band(en_text, [(90, 40), (130, 36), (175, 32), (230, 28), (9999, 24)])
-    cn_size = _text_band(cn_text, [(55, 23), (90, 21), (130, 19), (9999, 17)])
+    en_size = _text_band(en_text, [(90, 48), (130, 44), (180, 39), (240, 34), (9999, 30)])
+    cn_size = _text_band(cn_text, [(55, 30), (90, 28), (135, 26), (9999, 24)])
     en_leading = 1.23 if en_size >= 34 else 1.18
-    cn_leading = 1.55 if cn_size >= 21 else 1.42
+    cn_leading = 1.5 if cn_size >= 26 else 1.42
     main_gap = 24 if len(en_text) <= 150 else 16
     kicker_bits = " · ".join(b for b in ["Essay", frame.get("author", ""), frame.get("year", "")] if b)
-
-    title_bar = (
-        f'<div style="grid-column:1/-1;grid-row:1;display:flex;align-items:center;gap:16px;'
-        f'padding-bottom:14px;border-bottom:1px solid {pal["fg"]}">'
-        f'<div style="width:24px;height:24px;background:{pal["accent"]};flex-shrink:0"></div>'
-        f'<div style="flex:1;min-width:0">'
-        f'<div style="display:flex;flex-direction:column;gap:1.7px">'
-        f'{_kicker(kicker_bits, pal, 8.5)}'
-        f'<div style="font-family:{SERIF_EN};font-style:italic;font-weight:500;font-size:18.7px;'
-        f'color:{pal["fg"]};letter-spacing:-.2px;line-height:1.1;margin-top:1.7px">{_esc(frame.get("titleEn"))}'
-        f'<span style="font-family:{SERIF_CN};font-style:normal;font-size:15.3px;color:{pal["fg2"]};margin-left:8.5px">· {_esc(frame.get("titleCn"))}</span>'
-        f'</div></div></div>'
-        f'<div style="display:flex;align-items:center;gap:14px">{_counter(s["index"], s["total"], pal)}</div>'
-        f'</div>'
-    )
-
-    main_col = (
-        f'<div style="grid-column:1;grid-row:2;display:flex;flex-direction:column;justify-content:flex-start;'
-        f'gap:{main_gap}px;min-width:0;padding:30px 8px 0 0">'
-        f'<div>{_kicker("EN", pal, 9, "margin-bottom:8px;display:block")}'
-        f'<p style="font-family:{SERIF_EN};font-size:{en_size}px;line-height:{en_leading};color:{pal["fg"]};'
-        f'letter-spacing:0;text-wrap:pretty">{_mark_vocab(en_text, words, pal)}</p></div>'
-        f'<div style="width:60px;height:1px;background:{pal["rule"]}"></div>'
-        f'<div>{_kicker("CN · 译文", pal, 9, "margin-bottom:8px;display:block")}'
-        f'<p style="font-family:{SERIF_CN};font-size:{cn_size}px;line-height:{cn_leading};color:{pal["fg"]};'
-        f'opacity:.86;letter-spacing:0">{_esc(cn_text)}</p></div></div>'
-    )
-
     notes = "".join(_footnote_entry(w, pal, i + 1, i == len(words) - 1) for i, w in enumerate(words))
-    sidebar = (
-        f'<div style="grid-column:2;grid-row:2;border-left:0.5px solid {pal["rule"]};padding-left:24px;'
-        f'display:flex;flex-direction:column;min-height:0">'
-        f'<div style="display:flex;align-items:baseline;gap:10px;margin-bottom:12px">'
-        f'{_kicker("Notes · 难词", pal, 10)}<div style="flex:1;height:1px;background:{pal["rule"]}"></div></div>'
-        f'<div style="flex:1;display:flex;flex-direction:column;overflow:hidden">{notes}</div></div>'
-    )
-
-    footer = (
-        f'<div style="grid-column:1/-1;grid-row:3;padding-top:14px">{_progress(s["index"], s["total"], pal)}</div>'
-    )
-
-    body = (
-        f'<div style="width:100%;height:100%;display:grid;grid-template-columns:1fr 340px;'
-        f'grid-template-rows:auto 1fr auto;gap:0 48px;padding:40px 56px 30px;box-sizing:border-box;'
-        f'position:relative;overflow:hidden">{title_bar}{main_col}{sidebar}{footer}</div>'
-    )
-    return _doc(body, pal, 1280, 720)
+    progress_pct = (s["index"] / s["total"] * 100) if s.get("total") else 0
+    return _render_template("h3_16x9.html", _FALLBACK_H3_TEMPLATE, {
+        "bg": pal["bg"], "bg2": pal["bg2"], "fg": pal["fg"], "fg2": pal["fg2"],
+        "rule": pal["rule"], "accent": pal["accent"],
+        "serif_en": SERIF_EN, "serif_cn": SERIF_CN, "sans_en": SANS_EN, "sans_cn": SANS_CN,
+        "kicker": _esc(kicker_bits), "title_en": _esc(frame.get("titleEn")),
+        "title_cn": _esc(frame.get("titleCn")),
+        "sentence_index": f'{int(s["index"]):02d}', "sentence_total": f'{int(s["total"]):02d}',
+        "sentence_en_html": _mark_vocab(en_text, words, pal), "sentence_cn": _esc(cn_text),
+        "vocab_html": notes, "vocab_count": len(words), "progress_pct": f"{progress_pct:.2f}",
+        "en_size": en_size, "cn_size": cn_size, "en_leading": en_leading,
+        "cn_leading": cn_leading, "main_gap": main_gap,
+    })
 
 
 # ───────── V3「Annotated」竖屏 540×960 → 1080×1920 ─────────
@@ -291,49 +297,25 @@ def render_v3(frame: dict[str, Any], pal: dict[str, str]) -> str:
     en_text = s.get("en", "")
     cn_text = s.get("cn", "")
     words = _learning_words(frame.get("words", []), en_text)
-    en_size = _text_band(en_text, [(80, 34), (120, 31), (165, 27), (220, 24), (9999, 21)])
-    cn_size = _text_band(cn_text, [(55, 22), (90, 20), (130, 19), (9999, 17.5)])
-    en_leading = 1.28 if en_size >= 30 else 1.2
-    cn_leading = 1.55 if cn_size >= 20 else 1.42
-
-    title_bar = (
-        f'<div style="padding:0 36px 18px;border-bottom:1px solid {pal["fg"]};margin-bottom:26px">'
-        f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
-        f'{_kicker("Close Reading · 精读", pal, 10)}{_counter(s["index"], s["total"], pal)}</div>'
-        f'<div style="font-family:{SERIF_EN};font-style:italic;font-size:22px;color:{pal["fg"]};'
-        f'margin-top:6px;letter-spacing:-.2px">{_esc(frame.get("titleEn"))}'
-        f'<span style="font-family:{SERIF_CN};font-style:normal;color:{pal["fg2"]};margin-left:8px;font-size:18px">· {_esc(frame.get("titleCn"))}</span>'
-        f'</div></div>'
-    )
-
-    sentence = (
-        f'<div style="padding:42px 36px 0;flex:1 1 auto;display:flex;flex-direction:column;justify-content:flex-start;gap:20px;min-height:0">'
-        f'<p style="font-family:{SERIF_EN};font-size:{en_size}px;line-height:{en_leading};color:{pal["fg"]};'
-        f'letter-spacing:0;text-wrap:pretty">{_mark_vocab(en_text, words, pal)}</p>'
-        f'<div style="height:1px;background:{pal["rule"]}"></div>'
-        f'<p style="font-family:{SERIF_CN};font-size:{cn_size}px;line-height:{cn_leading};color:{pal["fg"]};'
-        f'opacity:.88;letter-spacing:0">{_esc(cn_text)}</p></div>'
-    )
+    en_size = _text_band(en_text, [(80, 42), (120, 38), (165, 34), (220, 30), (9999, 27)])
+    cn_size = _text_band(cn_text, [(55, 28), (90, 26), (130, 24), (9999, 22)])
+    en_leading = 1.26 if en_size >= 34 else 1.18
+    cn_leading = 1.48 if cn_size >= 24 else 1.38
 
     # 难词：学习视频中只保留最关键的 3-4 个，避免挤占完整句子的阅读空间。
-    if words:
-        cards_html = "".join(_word_card_boxed(w, pal) for w in words)
-        strip = (
-            f'<div style="margin-top:18px;flex:0 0 auto">'
-            f'<div style="display:flex;align-items:baseline;gap:10px;padding:0 36px;margin-bottom:12px">'
-            f'{_kicker("Vocabulary · 难词", pal, 10)}<div style="flex:1;height:1px;background:{pal["rule"]}"></div>'
-            f'<span style="font-family:{SANS_EN};font-size:9px;color:{pal["fg2"]};letter-spacing:1px">{len(words)} words</span></div>'
-            f'<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;padding:0 36px">{cards_html}</div>'
-            f'<div style="margin-top:22px;padding:0 36px">{_progress(s["index"], s["total"], pal)}</div></div>'
-        )
-    else:
-        strip = f'<div style="margin-top:24px;padding:0 36px">{_progress(s["index"], s["total"], pal)}</div>'
-
-    body = (
-        f'<div style="width:100%;height:100%;display:flex;flex-direction:column;padding:44px 0 32px;'
-        f'box-sizing:border-box;position:relative;overflow:hidden">{title_bar}{sentence}{strip}</div>'
-    )
-    return _doc(body, pal, 540, 960)
+    cards_html = "".join(_word_card_boxed(w, pal) for w in words)
+    progress_pct = (s["index"] / s["total"] * 100) if s.get("total") else 0
+    return _render_template("v3_9x16.html", _FALLBACK_V3_TEMPLATE, {
+        "bg": pal["bg"], "bg2": pal["bg2"], "fg": pal["fg"], "fg2": pal["fg2"],
+        "rule": pal["rule"], "accent": pal["accent"],
+        "serif_en": SERIF_EN, "serif_cn": SERIF_CN, "sans_en": SANS_EN, "sans_cn": SANS_CN,
+        "title_en": _esc(frame.get("titleEn")), "title_cn": _esc(frame.get("titleCn")),
+        "sentence_index": f'{int(s["index"]):02d}', "sentence_total": f'{int(s["total"]):02d}',
+        "sentence_en_html": _mark_vocab(en_text, words, pal), "sentence_cn": _esc(cn_text),
+        "vocab_html": cards_html, "vocab_count": len(words), "progress_pct": f"{progress_pct:.2f}",
+        "en_size": en_size, "cn_size": cn_size, "en_leading": en_leading,
+        "cn_leading": cn_leading, "main_gap": 20,
+    })
 
 
 RATIO_SPEC = {
