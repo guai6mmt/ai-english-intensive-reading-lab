@@ -339,15 +339,16 @@ chcp 65001 >nul
 cd /d "%~dp0"
 setlocal
 set "BROWSER="
-for %%P in ("%ProgramFiles%\Google\Chrome\Application\chrome.exe" "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe" "%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe" "%ProgramFiles%\Microsoft\Edge\Application\msedge.exe") do if exist "%%~P" set "BROWSER=%%~P"
+for %%P in ("%ProgramFiles%\Google\Chrome\Application\chrome.exe" "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe" "%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe" "%ProgramFiles%\Microsoft\Edge\Application\msedge.exe") do if not defined BROWSER if exist "%%~P" set "BROWSER=%%~P"
 if "%BROWSER%"=="" ( echo [ERROR] No Chrome/Edge found. Please install Chrome or Edge. & pause & exit /b 1 )
 echo Using browser: %BROWSER%
 echo Rendering frames to PNG ...
-for %%F in (f*.html) do "%BROWSER%" --headless=new --disable-gpu --hide-scrollbars --no-sandbox --disable-extensions --user-data-dir="%CD%\.chrome-profile" --force-device-scale-factor=@@DSF@@ --window-size=@@W@@,@@H@@ --default-background-color=00000000 --screenshot="%%~nF.png" "file:///%CD:\=/%/%%F" >nul 2>&1
+for %%F in (f*.html) do "%BROWSER%" --headless=new --disable-gpu --hide-scrollbars --no-sandbox --disable-extensions --user-data-dir="%CD%\.chrome-profile" --force-device-scale-factor=@@DSF@@ --window-size=@@W@@,@@H@@ --default-background-color=00000000 --screenshot="%CD%\%%~nF.png" "file:///%CD:\=/%/%%F" >nul 2>&1
+if not exist "f0000.png" ( echo [ERROR] No frames were captured. Make sure Chrome/Edge is installed and this folder is writable ^(avoid system-protected paths^). & pause & exit /b 1 )
 where ffmpeg >nul 2>&1
 if errorlevel 1 ( echo [ERROR] ffmpeg not found on PATH. Install ffmpeg ^(https://ffmpeg.org^) then re-run. & pause & exit /b 1 )
 echo Assembling out.mp4 ...
-ffmpeg -y -f concat -safe 0 -i frames.txt -i audio.wav -c:v libx264 -pix_fmt yuv420p -r 25 -c:a aac -b:a 192k -shortest -vsync vfr out.mp4
+ffmpeg -y -f concat -safe 0 -i frames.txt -i audio.wav -c:v libx264 -pix_fmt yuv420p -r 25 -c:a aac -b:a 192k -shortest -fps_mode vfr out.mp4
 echo Done. Output: out.mp4
 pause
 """
@@ -363,10 +364,11 @@ done
 [ -z "$BROWSER" ] && { echo "[ERROR] No Chrome/Chromium found."; exit 1; }
 echo "Using browser: $BROWSER"
 for f in f*.html; do
-  "$BROWSER" --headless=new --disable-gpu --hide-scrollbars --no-sandbox --user-data-dir="$PWD/.chrome-profile" --force-device-scale-factor=@@DSF@@ --window-size=@@W@@,@@H@@ --default-background-color=00000000 --screenshot="${f%.html}.png" "file://$PWD/$f" >/dev/null 2>&1
+  "$BROWSER" --headless=new --disable-gpu --hide-scrollbars --no-sandbox --user-data-dir="$PWD/.chrome-profile" --force-device-scale-factor=@@DSF@@ --window-size=@@W@@,@@H@@ --default-background-color=00000000 --screenshot="$PWD/${f%.html}.png" "file://$PWD/$f" >/dev/null 2>&1
 done
+ls f*.png >/dev/null 2>&1 || { echo "[ERROR] No frames were captured. Check the browser install and folder permissions."; exit 1; }
 command -v ffmpeg >/dev/null 2>&1 || { echo "[ERROR] ffmpeg not found."; exit 1; }
-ffmpeg -y -f concat -safe 0 -i frames.txt -i audio.wav -c:v libx264 -pix_fmt yuv420p -r 25 -c:a aac -b:a 192k -shortest -vsync vfr out.mp4
+ffmpeg -y -f concat -safe 0 -i frames.txt -i audio.wav -c:v libx264 -pix_fmt yuv420p -r 25 -c:a aac -b:a 192k -shortest -fps_mode vfr out.mp4
 echo "Done. Output: out.mp4"
 """
 
