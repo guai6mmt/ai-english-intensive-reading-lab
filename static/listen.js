@@ -560,10 +560,10 @@ function renderSourceSelector() {
   const ready = Boolean((active && active.cached) || state.alignedReady);
   const downloadDisabled = state.alignedLoading || state.videoExporting || !ready ? " disabled" : "";
   const downloadTitle = ready
-    ? "下载 16:9 视频素材包"
+    ? "下载第三版视频素材包（横屏 16:9 + 竖屏 9:16）"
     : "请先生成当前朗读模型的整篇音频";
   box.innerHTML = `<span class="lp-source-label">朗读模型</span>${pills}
-    <button class="lp-video-export-btn" id="lpVideoExportBtn" aria-label="下载 16:9 视频素材包" title="${downloadTitle}"${downloadDisabled}>⇩</button>`;
+    <button class="lp-video-export-btn" id="lpVideoExportBtn" aria-label="下载第三版视频素材包" title="${downloadTitle}"${downloadDisabled}>⇩</button>`;
 }
 
 function filenameFromDisposition(value) {
@@ -589,21 +589,22 @@ async function downloadVideoPackage() {
   }
   const label = (active && active.label) || state.provider || "当前模型";
   const ok = confirm(
-    `将下载当前文章的 16:9 视频素材包，包含音频、字幕、背景和 render.bat。\n\n` +
-    `当前朗读模型：${label}\n\n` +
-    `请确认你正在电脑上操作。是否继续下载？`
+    `将渲染并下载第三版视频素材包（横屏 16:9 + 竖屏 9:16），每个比例含逐帧画面、音频和 render.bat。\n\n` +
+    `当前朗读模型：${label}\n` +
+    `服务器逐帧渲染约需 1 分钟，请耐心等待。下载后在电脑上运行 render.bat（需本机 ffmpeg）即可合成 MP4。\n\n` +
+    `是否继续？`
   );
   if (!ok) return;
 
   const btn = $("lpVideoExportBtn");
   state.videoExporting = true;
   if (btn) btn.disabled = true;
-  setSub("正在打包视频素材…");
+  setSub("正在渲染并打包第三版视频帧（横屏+竖屏），约需 1 分钟…");
   try {
-    const res = await fetch(`/api/articles/${encodeURIComponent(state.articleId)}/video/export-package/download`, {
+    const res = await fetch(`/api/articles/${encodeURIComponent(state.articleId)}/video/render/download`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider: state.provider || undefined }),
+      body: JSON.stringify({ provider: state.provider || undefined, ratios: ["16:9", "9:16"] }),
     });
     if (!res.ok) {
       let msg = `${res.status}`;
@@ -612,7 +613,7 @@ async function downloadVideoPackage() {
     }
     const blob = await res.blob();
     const filename = filenameFromDisposition(res.headers.get("Content-Disposition"))
-      || `video_16x9_${state.articleId}.zip`;
+      || `video_v3_${state.articleId}.zip`;
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;

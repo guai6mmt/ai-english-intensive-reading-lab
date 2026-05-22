@@ -39,6 +39,8 @@ try:
 except Exception:  # pragma: no cover - fallback keeps local mode usable.
     OpenAI = None
 
+import video_render
+
 try:
     import oss2
 except Exception:  # pragma: no cover - OSS is optional until aligned audio is used.
@@ -266,6 +268,15 @@ class VideoExportRequest(BaseModel):
     provider: str | None = None
     ratios: list[str] = ["16:9"]
     audio_format: str = "wav"
+
+
+class VideoRenderRequest(BaseModel):
+    """路线 C：把第三版设计（H3 横屏 / V3 竖屏）渲染成帧素材包。
+    默认只在服务器出帧+脚本，由用户本地跑 ffmpeg；assemble=True 才在服务器直接合成 MP4。"""
+    provider: str | None = None
+    ratios: list[str] = ["16:9", "9:16"]
+    palette: str = "warm"
+    assemble: bool = False
 
 
 class DictationItemsRequest(BaseModel):
@@ -3934,6 +3945,264 @@ def download_video_export_package(article_id: str, request: VideoExportRequest) 
             file_path = out_dir / name
             if file_path.exists() and file_path.is_file():
                 zf.write(file_path, arcname=name)
+    return FileResponse(zip_path, media_type="application/zip", filename=f"{zip_stem}.zip")
+
+
+# ───────── Video export 路线 C：第三版设计（H3/V3）→ HTML 帧 → MP4 ─────────
+
+_VIDEO_ENRICH_SYSTEM = "你是英语词典助手。只输出 JSON，不要解释。"
+
+_RENDER_C_BAT = """@echo off
+chcp 65001 >nul
+cd /d "%~dp0"
+echo Rendering video with ffmpeg (concat frames + audio)...
+ffmpeg -y -f concat -safe 0 -i frames.txt -i audio.wav -c:v libx264 -pix_fmt yuv420p -r 25 -c:a aac -b:a 192k -shortest -vsync vfr out.mp4
+echo Done. Output: out.mp4
+pause
+"""
+
+_RENDER_C_SH = """#!/bin/sh
+set -e
+cd "$(dirname "$0")"
+echo "Rendering video with ffmpeg (concat frames + audio)..."
+ffmpeg -y -f concat -safe 0 -i frames.txt -i audio.wav -c:v libx264 -pix_fmt yuv420p -r 25 -c:a aac -b:a 192k -shortest -vsync vfr out.mp4
+echo "Done. Output: out.mp4"
+"""
+
+_RENDER_C_README = """英语精读视频导出包 · 第三版设计（H3 横屏 / V3 竖屏）
+=================================================
+
+每个 render_* 目录是一个独立的视频素材包：
+  f0000.png, f0001.png ...   逐帧画面（每帧一句/一子句，已是成片分辨率）
+  frames.txt                 ffmpeg concat 清单（每帧时长已写好）
+  audio.wav                  整篇朗读音频（与画面同源）
+  render.bat / render.sh     一键合成脚本
+
+在本机合成（你当前的流程）：
+  1. 安装 ffmpeg（https://ffmpeg.org/download.html），确保终端能运行 ffmpeg。
+  2. 进入 render_16x9（横屏）或 render_9x16（竖屏）目录。
+  3. Windows 双击 render.bat；mac / Linux 运行  sh render.sh
+  4. 生成 out.mp4。
+
+说明：
+  - 画面字体在服务器端渲染时已定稿，本机无需安装任何字体。
+  - 16:9 = 1920×1080（B站/横屏）；9:16 = 1080×1920（抖音/小红书/竖屏）。
+"""
+
+
+def _enrich_vocab_phonetics(terms: list[str], article: dict[str, Any], article_id: str) -> dict[str, dict[str, str]]:
+    """为难词补 IPA 音标 + 词性（第三版卡片需要），结果缓存在文章的 vocab_phonetics。"""
+    cache = dict(article.get("vocab_phonetics") or {})
+    missing = [t for t in terms if t and t not in cache]
+    if missing:
+        prompt = (
+            "为下列英文单词或短语逐个标注 IPA 音标（用斜杠包裹，如 /ˈstʌdi/）和词性"
+            "（英文缩写：n. v. adj. adv. prep. conj. phr. 等）。返回 JSON 字段 items，"
+            '形如 {"word": {"ipa": "...", "pos": "..."}}。词表：\n' + "\n".join(missing)
+        )
+        result, _meta = call_ai_json("deepseek", _VIDEO_ENRICH_SYSTEM, prompt, {"items": {}})
+        items = result.get("items") if isinstance(result, dict) else {}
+        if not isinstance(items, dict):
+            items = {}
+        for t in missing:
+            entry = items.get(t) if isinstance(items.get(t), dict) else {}
+            cache[t] = {
+                "ipa": clean_text(str(entry.get("ipa", ""))),
+                "pos": clean_text(str(entry.get("pos", ""))),
+            }
+        save_article_fields(article_id, {"vocab_phonetics": cache})
+    return cache
+
+
+def _video_title_cn(article: dict[str, Any], article_id: str) -> str:
+    """第三版标题区需要中文标题；缺则 AI 翻译一次并缓存。"""
+    cached = clean_text(str(article.get("title_cn") or ""))
+    if cached:
+        return cached
+    title = clean_text(str(article.get("title") or ""))
+    if not title:
+        return ""
+    result, _meta = call_ai_json(
+        "deepseek", _VIDEO_ENRICH_SYSTEM,
+        f"把下面的英文文章标题翻译成简洁地道的中文，只返回 JSON 字段 title_cn：\n{title}",
+        {"title_cn": ""},
+    )
+    cn = clean_text(str(result.get("title_cn") or "")) if isinstance(result, dict) else ""
+    if cn:
+        save_article_fields(article_id, {"title_cn": cn})
+    return cn
+
+
+def _build_video_frames(
+    items: list[dict[str, Any]],
+    translations: dict[int, str],
+    vocab_by_index: dict[int, list[Any]],
+    phonetics: dict[str, dict[str, str]],
+    alignments: dict[int, dict[str, Any]],
+    ratio: str,
+    title_meta: dict[str, str],
+) -> list[dict[str, Any]]:
+    """逐句→显示分段→每帧数据（含字符占比时间轴）。一句多帧时共用 §index/total 计数。"""
+    budget = video_render.CHAR_BUDGET.get(ratio, 150)
+    valid = [i for i in range(len(items)) if alignments.get(i) and _valid_alignment(alignments[i])]
+    total = len(valid)
+    frames: list[dict[str, Any]] = []
+    for sentence_no, i in enumerate(valid, start=1):
+        a = alignments[i]
+        en = (items[i].get("text") or "").strip()
+        cn = (translations.get(i) or "").strip()
+        words: list[dict[str, str]] = []
+        for v in (vocab_by_index.get(i) or [])[:6]:
+            if not isinstance(v, dict):
+                continue
+            term = (v.get("term") or "").strip()
+            if not term:
+                continue
+            ph = phonetics.get(term) or {}
+            words.append({
+                "en": term, "ipa": ph.get("ipa", ""), "pos": ph.get("pos", ""),
+                "cn": (v.get("meaning") or "").strip(),
+            })
+        segs = video_render.segment_for_display(en, budget)
+        spans = video_render.distribute_time(segs, a["begin_ms"], a["end_ms"])
+        for seg_text, (b, e) in zip(segs, spans):
+            frames.append({
+                **title_meta,
+                "sentence": {"en": seg_text, "cn": cn, "index": sentence_no, "total": total},
+                "words": words,
+                "begin_ms": b, "end_ms": e,
+            })
+    return frames
+
+
+@app.post("/api/articles/{article_id}/video/render")
+def video_render_package(article_id: str, request: VideoRenderRequest) -> dict[str, Any]:
+    """把第三版设计（H3 横屏 / V3 竖屏）渲染成 HTML 帧并合成 MP4（无 ffmpeg 时导出帧+脚本）。"""
+    article = find_article(article_id)
+    items = listening_sentence_items(article)
+    if not items:
+        raise HTTPException(400, "无法切分出句子。")
+    browser = video_render.find_browser()
+    if not browser:
+        raise HTTPException(400, "未找到 Chrome / Edge 浏览器，无法把设计渲染成视频帧。请安装 Chrome 或 Edge 后重试。")
+
+    provider = _resolve_export_provider(article, article_id, items, request.provider)
+    ctx = _build_aligned_context(article, article_id, items, provider)
+    if not (ctx["audio_path"].exists() and ctx["align_path"].exists()):
+        label = AUDIO_PROVIDER_LABELS.get(provider, provider)
+        raise HTTPException(400, f"该文章尚未生成 {label} 的整篇对齐音频，请先在听力模式用 {label} 生成后再导出。")
+
+    align_data = load_json(ctx["align_path"], {})
+    alignments = {
+        a["index"]: a for a in align_data.get("alignments", [])
+        if isinstance(a, dict) and "index" in a
+    }
+    if not alignments:
+        raise HTTPException(400, "对齐数据为空，请在听力模式重新生成整篇音频。")
+
+    prep = listening_prepare(article_id)
+    translations = {s["index"]: s.get("translation", "") for s in prep.get("sentences", [])}
+    vocab_by_index = {s["index"]: s.get("vocab", []) for s in prep.get("sentences", [])}
+
+    all_terms = sorted({
+        (v.get("term") or "").strip()
+        for vs in vocab_by_index.values() for v in vs
+        if isinstance(v, dict) and (v.get("term") or "").strip()
+    })
+    phonetics = _enrich_vocab_phonetics(all_terms, article, article_id)
+    title_meta = {
+        "titleEn": article.get("title", ""),
+        "titleCn": _video_title_cn(article, article_id),
+        "author": "", "year": "",
+    }
+
+    ffmpeg = video_render.find_ffmpeg()
+    pal = video_render.get_palette(request.palette)
+    out_dir = VIDEO_EXPORT_DIR / article_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ratios = [r for r in request.ratios if r in video_render.RATIO_SPEC]
+    outputs: dict[str, Any] = {}
+
+    for ratio in ratios:
+        slug = ratio.replace(":", "x")
+        frames = _build_video_frames(items, translations, vocab_by_index, phonetics, alignments, ratio, title_meta)
+        if not frames:
+            continue
+        spec = video_render.RATIO_SPEC[ratio]
+        render = spec["render"]
+        frames_dir = out_dir / f"render_{slug}"
+        if frames_dir.exists():
+            shutil.rmtree(frames_dir, ignore_errors=True)
+        frames_dir.mkdir(parents=True, exist_ok=True)
+
+        def _shot(job: tuple[int, dict[str, Any]]) -> tuple[int, str, float]:
+            idx, fr = job
+            png = frames_dir / f"f{idx:04d}.png"
+            video_render.screenshot_html(render(fr, pal), ratio, png, browser)
+            return idx, str(png), fr["end_ms"] - fr["begin_ms"]
+
+        rendered: list[Any] = [None] * len(frames)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for idx, png, dur in pool.map(_shot, list(enumerate(frames))):
+                rendered[idx] = {"png": png, "dur_ms": dur}
+
+        list_path = frames_dir / "frames.txt"
+        video_render.write_concat_list(rendered, list_path)
+        (frames_dir / "audio.wav").write_bytes(ctx["audio_path"].read_bytes())
+        (frames_dir / "render.bat").write_text(_RENDER_C_BAT, encoding="utf-8")
+        (frames_dir / "render.sh").write_text(_RENDER_C_SH, encoding="utf-8", newline="\n")
+        (frames_dir / "README.txt").write_text(_RENDER_C_README, encoding="utf-8")
+
+        entry: dict[str, Any] = {
+            "design": spec["design"],
+            "frames": len(frames),
+            "frames_dir": str(frames_dir),
+            "resolution": f'{spec["out_w"]}x{spec["out_h"]}',
+            "mp4": None,
+        }
+        # 默认只出帧素材包，由用户本地跑 render.bat 合成；assemble=True 才在服务器直接合成。
+        if request.assemble and ffmpeg:
+            out_mp4 = out_dir / f"video_{slug}.mp4"
+            video_render.assemble_mp4(list_path, frames_dir / "audio.wav", out_mp4, ffmpeg)
+            entry["mp4"] = str(out_mp4)
+        else:
+            entry["note"] = "已导出帧序列 + render.bat：进入该目录运行 render.bat（需本机 ffmpeg）即可合成 MP4。"
+        outputs[ratio] = entry
+
+    if not outputs:
+        raise HTTPException(400, "没有可渲染的画面（请检查比例与对齐数据）。")
+
+    save_json(out_dir / "render_meta.json", {
+        "article_id": article_id, "title": article.get("title", ""),
+        "provider": provider, "palette": request.palette, "design": "v3",
+        "ffmpeg": bool(ffmpeg), "outputs": outputs,
+    })
+    return {
+        "article_id": article_id, "provider": provider,
+        "ffmpeg_available": bool(ffmpeg), "browser": browser,
+        "outputs": outputs,
+        "hint": "已在服务器合成 MP4。" if (request.assemble and ffmpeg)
+                else "已打包帧素材：解压后进入 render_16x9 / render_9x16 目录运行 render.bat（需本机 ffmpeg）合成 MP4。",
+    }
+
+
+@app.post("/api/articles/{article_id}/video/render/download")
+def download_video_render_package(article_id: str, request: VideoRenderRequest) -> FileResponse:
+    result = video_render_package(article_id, request)
+    title = str(find_article(article_id).get("title") or article_id)
+    provider = str(result.get("provider") or "audio")
+    zip_stem = _safe_download_stem(f"video_v3_{title}_{provider}", f"video_v3_{article_id}")
+    zip_path = VIDEO_EXPORT_DIR / f"{article_id}_{provider}_v3.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for entry in result.get("outputs", {}).values():
+            mp4 = entry.get("mp4")
+            if mp4 and Path(mp4).exists():
+                zf.write(mp4, arcname=Path(mp4).name)
+            else:
+                fdir = Path(entry["frames_dir"])
+                for p in sorted(fdir.iterdir()):
+                    if p.is_file():
+                        zf.write(p, arcname=f"{fdir.name}/{p.name}")
     return FileResponse(zip_path, media_type="application/zip", filename=f"{zip_stem}.zip")
 
 
