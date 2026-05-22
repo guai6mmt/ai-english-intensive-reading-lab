@@ -562,8 +562,12 @@ function renderSourceSelector() {
   const downloadTitle = ready
     ? "下载第三版视频素材包（横屏 16:9 + 竖屏 9:16）"
     : "请先生成当前朗读模型的整篇音频";
+  const scrollDownloadTitle = ready
+    ? "下载滚动听力视频素材包（16:9）"
+    : "请先生成当前朗读模型的整篇音频";
   box.innerHTML = `<span class="lp-source-label">朗读模型</span>${pills}
-    <button class="lp-video-export-btn" id="lpVideoExportBtn" aria-label="下载第三版视频素材包" title="${downloadTitle}"${downloadDisabled}>⇩</button>`;
+    <button class="lp-video-export-btn" id="lpVideoExportBtn" aria-label="下载第三版视频素材包" title="${downloadTitle}"${downloadDisabled}>⇩</button>
+    <button class="lp-video-export-btn" id="lpScrollVideoExportBtn" aria-label="下载滚动听力视频素材包" title="${scrollDownloadTitle}"${downloadDisabled}>▤</button>`;
 }
 
 function filenameFromDisposition(value) {
@@ -625,6 +629,62 @@ async function downloadVideoPackage() {
     setSub("视频素材包已开始下载");
   } catch (err) {
     console.warn("Video export download failed:", err);
+    setSub(`下载失败：${err.message}`);
+  } finally {
+    state.videoExporting = false;
+    renderSourceSelector();
+  }
+}
+
+async function downloadListeningScrollPackage() {
+  if (state.videoExporting) return;
+  const active = state.variants.find((v) => v.provider === state.provider);
+  if (state.alignedLoading) {
+    setSub("整篇音频仍在生成中，请完成后再下载滚动听力视频包");
+    return;
+  }
+  if (!state.alignedReady && !(active && active.cached)) {
+    setSub("请先生成当前朗读模型的整篇音频，再下载滚动听力视频包");
+    return;
+  }
+  const label = (active && active.label) || state.provider || "当前模型";
+  const ok = confirm(
+    `将渲染并下载滚动听力视频素材包（16:9）。画面会模拟听力模式：左侧文章自动滚动并高亮当前句，右侧显示当前句译文和全部生词。\n\n` +
+    `当前朗读模型：${label}\n` +
+    `下载后在电脑上运行 render.bat（需本机 Chrome/Edge + ffmpeg）即可合成 MP4。\n\n` +
+    `是否继续？`
+  );
+  if (!ok) return;
+
+  const btn = $("lpScrollVideoExportBtn");
+  state.videoExporting = true;
+  if (btn) btn.disabled = true;
+  setSub("正在打包滚动听力视频帧（16:9），请稍候…");
+  try {
+    const res = await fetch(`/api/articles/${encodeURIComponent(state.articleId)}/video/listening-scroll/download`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: state.provider || undefined, ratios: ["listen-scroll-16:9"] }),
+    });
+    if (!res.ok) {
+      let msg = `${res.status}`;
+      try { const d = await res.json(); msg = d.detail || d.message || msg; } catch {}
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    const filename = filenameFromDisposition(res.headers.get("Content-Disposition"))
+      || `video_listen_scroll_${state.articleId}.zip`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    setSub("滚动听力视频素材包已开始下载");
+  } catch (err) {
+    console.warn("Listening scroll video export failed:", err);
     setSub(`下载失败：${err.message}`);
   } finally {
     state.videoExporting = false;
@@ -755,6 +815,11 @@ function wireEvents() {
   });
   $("lpRegenBtn").addEventListener("click", regenerateAligned);
   $("lpSource").addEventListener("click", (e) => {
+    const scrollExportBtn = e.target.closest("#lpScrollVideoExportBtn");
+    if (scrollExportBtn && !scrollExportBtn.disabled) {
+      downloadListeningScrollPackage();
+      return;
+    }
     const exportBtn = e.target.closest(".lp-video-export-btn");
     if (exportBtn && !exportBtn.disabled) {
       downloadVideoPackage();

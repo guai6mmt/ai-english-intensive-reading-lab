@@ -4055,6 +4055,54 @@ def _build_video_frames(
     return frames
 
 
+def _build_listen_scroll_frames(
+    items: list[dict[str, Any]],
+    translations: dict[int, str],
+    vocab_by_index: dict[int, list[Any]],
+    phonetics: dict[str, dict[str, str]],
+    alignments: dict[int, dict[str, Any]],
+    title_meta: dict[str, str],
+    provider_label: str,
+) -> list[dict[str, Any]]:
+    """Listening-mode video: full article stays in the frame; each sentence state scrolls into view."""
+    valid = [i for i in range(len(items)) if alignments.get(i) and _valid_alignment(alignments[i])]
+    total = len(valid)
+    article_sentences = [
+        {"index": i, "para": item.get("para", 0), "text": (item.get("text") or "").strip()}
+        for i, item in enumerate(items)
+    ]
+    frames: list[dict[str, Any]] = []
+    for sentence_no, i in enumerate(valid, start=1):
+        a = alignments[i]
+        en = (items[i].get("text") or "").strip()
+        cn = (translations.get(i) or "").strip()
+        words: list[dict[str, str]] = []
+        for v in (vocab_by_index.get(i) or []):
+            if not isinstance(v, dict):
+                continue
+            term = (v.get("term") or "").strip()
+            if not term:
+                continue
+            ph = phonetics.get(term) or {}
+            words.append({
+                "en": term, "ipa": ph.get("ipa", ""), "pos": ph.get("pos", ""),
+                "cn": (v.get("meaning") or "").strip(),
+            })
+        frames.append({
+            **title_meta,
+            "providerLabel": provider_label,
+            "article_sentences": article_sentences,
+            "sentence": {
+                "en": en, "cn": cn, "index": sentence_no, "total": total,
+                "source_index": i,
+            },
+            "words": words,
+            "begin_ms": a["begin_ms"],
+            "end_ms": a["end_ms"],
+        })
+    return frames
+
+
 @app.post("/api/articles/{article_id}/video/render")
 def video_render_package(article_id: str, request: VideoRenderRequest) -> dict[str, Any]:
     """服务器把第三版设计（H3/V3）出成「逐帧 HTML + frames.txt + audio + render 脚本」素材包；
@@ -4155,6 +4203,125 @@ def download_video_render_package(article_id: str, request: VideoRenderRequest) 
     provider = str(result.get("provider") or "audio")
     zip_stem = _safe_download_stem(f"video_v3_{title}_{provider}", f"video_v3_{article_id}")
     zip_path = VIDEO_EXPORT_DIR / f"{article_id}_{provider}_v3.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for entry in result.get("outputs", {}).values():
+            fdir = Path(entry["frames_dir"])
+            for p in sorted(fdir.iterdir()):
+                if p.is_file():
+                    zf.write(p, arcname=f"{fdir.name}/{p.name}")
+    return FileResponse(zip_path, media_type="application/zip", filename=f"{zip_stem}.zip")
+
+
+_RENDER_LISTEN_SCROLL_README = """英语精读视频导出包 · 滚动听力视频（16:9）
+=================================================
+
+这个素材包模拟网页听力模式：
+  f0000.html, f0001.html ...  每句对应一帧，文章自动滚动并高亮当前句
+  frames.txt                  ffmpeg concat 清单
+  audio.wav                   整篇朗读音频
+  render.bat / render.sh      本机浏览器截图 + ffmpeg 合成
+
+右侧面板包含当前句中文译文和全部标记生词；视频无法手动滑动，所以模板会使用紧凑布局尽量全部显示。
+
+使用：
+  Windows 双击 render.bat；mac / Linux 运行 sh render.sh
+"""
+
+
+@app.post("/api/articles/{article_id}/video/listening-scroll")
+def video_listening_scroll_package(article_id: str, request: VideoRenderRequest) -> dict[str, Any]:
+    """新增模式：16:9 滚动听力视频，保留原有精读卡片视频导出。"""
+    article = find_article(article_id)
+    items = listening_sentence_items(article)
+    if not items:
+        raise HTTPException(400, "无法切分出句子。")
+
+    provider = _resolve_export_provider(article, article_id, items, request.provider)
+    ctx = _build_aligned_context(article, article_id, items, provider)
+    if not (ctx["audio_path"].exists() and ctx["align_path"].exists()):
+        label = AUDIO_PROVIDER_LABELS.get(provider, provider)
+        raise HTTPException(400, f"该文章尚未生成 {label} 的整篇对齐音频，请先在听力模式用 {label} 生成后再导出。")
+
+    align_data = load_json(ctx["align_path"], {})
+    alignments = {
+        a["index"]: a for a in align_data.get("alignments", [])
+        if isinstance(a, dict) and "index" in a
+    }
+    if not alignments:
+        raise HTTPException(400, "对齐数据为空，请在听力模式重新生成整篇音频。")
+
+    prep = listening_prepare(article_id)
+    translations = {s["index"]: s.get("translation", "") for s in prep.get("sentences", [])}
+    vocab_by_index = {s["index"]: s.get("vocab", []) for s in prep.get("sentences", [])}
+
+    all_terms = sorted({
+        (v.get("term") or "").strip()
+        for vs in vocab_by_index.values() for v in vs
+        if isinstance(v, dict) and (v.get("term") or "").strip()
+    })
+    phonetics = _enrich_vocab_phonetics(all_terms, article, article_id)
+    title_meta = {
+        "titleEn": article.get("title", ""),
+        "titleCn": _video_title_cn(article, article_id),
+        "author": "", "year": "",
+    }
+
+    ratio = "listen-scroll-16:9"
+    spec = video_render.RATIO_SPEC[ratio]
+    frames = _build_listen_scroll_frames(
+        items, translations, vocab_by_index, phonetics, alignments,
+        title_meta, AUDIO_PROVIDER_LABELS.get(provider, provider),
+    )
+    if not frames:
+        raise HTTPException(400, "没有可渲染的滚动听力画面。")
+
+    out_dir = VIDEO_EXPORT_DIR / article_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    frames_dir = out_dir / "render_listen_scroll_16x9"
+    if frames_dir.exists():
+        shutil.rmtree(frames_dir, ignore_errors=True)
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    render = spec["render"]
+    pal = video_render.get_palette(request.palette)
+    rendered: list[dict[str, Any]] = []
+    for idx, fr in enumerate(frames):
+        (frames_dir / f"f{idx:04d}.html").write_text(render(fr, pal), encoding="utf-8")
+        rendered.append({"png": f"f{idx:04d}.png", "dur_ms": fr["end_ms"] - fr["begin_ms"]})
+
+    video_render.write_concat_list(rendered, frames_dir / "frames.txt")
+    (frames_dir / "audio.wav").write_bytes(ctx["audio_path"].read_bytes())
+    (frames_dir / "render.bat").write_text(video_render.render_bat(ratio), encoding="utf-8")
+    (frames_dir / "render.sh").write_text(video_render.render_sh(ratio), encoding="utf-8", newline="\n")
+    (frames_dir / "README.txt").write_text(_RENDER_LISTEN_SCROLL_README, encoding="utf-8")
+
+    save_json(out_dir / "listen_scroll_meta.json", {
+        "article_id": article_id, "title": article.get("title", ""),
+        "provider": provider, "design": "listen-scroll", "frames": len(frames),
+        "resolution": f'{spec["out_w"]}x{spec["out_h"]}',
+    })
+    return {
+        "article_id": article_id,
+        "provider": provider,
+        "outputs": {
+            "16:9": {
+                "design": spec["design"],
+                "frames": len(frames),
+                "frames_dir": str(frames_dir),
+                "resolution": f'{spec["out_w"]}x{spec["out_h"]}',
+            }
+        },
+        "hint": "已生成滚动听力视频素材：解压后进入 render_listen_scroll_16x9 运行 render.bat。",
+    }
+
+
+@app.post("/api/articles/{article_id}/video/listening-scroll/download")
+def download_video_listening_scroll_package(article_id: str, request: VideoRenderRequest) -> FileResponse:
+    result = video_listening_scroll_package(article_id, request)
+    title = str(find_article(article_id).get("title") or article_id)
+    provider = str(result.get("provider") or "audio")
+    zip_stem = _safe_download_stem(f"video_listen_scroll_{title}_{provider}", f"video_listen_scroll_{article_id}")
+    zip_path = VIDEO_EXPORT_DIR / f"{article_id}_{provider}_listen_scroll.zip"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for entry in result.get("outputs", {}).values():
             fdir = Path(entry["frames_dir"])

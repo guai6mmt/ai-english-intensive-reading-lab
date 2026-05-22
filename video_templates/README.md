@@ -6,6 +6,7 @@ Edit these files, then export the video package again:
 
 - `h3_16x9.html` controls the horizontal 16:9 layout.
 - `v3_9x16.html` controls the vertical 9:16 layout.
+- `listen_scroll_16x9.html` controls the listening-mode scroll video layout.
 
 The most common CSS knobs are:
 
@@ -14,6 +15,9 @@ The most common CSS knobs are:
 - `.main` or `.sentence` for spacing between English and Chinese.
 - `.notes`, `.vocab`, and `.vocab-grid` for vocabulary layout.
 - `.title-bar` if the title takes too much space.
+- In `listen_scroll_16x9.html`, `.lp-para`, `.lp-sent.current`,
+  `.lp-translation-text`, and `.lp-vocab-grid` control the scrolling article,
+  current sentence highlight, translation, and full vocabulary panel.
 
 Do not remove placeholders such as `{{ sentence_en_html }}`, `{{ sentence_cn }}`,
 `{{ vocab_html }}`, `{{ en_size }}`, or `{{ cn_size }}` unless you also update

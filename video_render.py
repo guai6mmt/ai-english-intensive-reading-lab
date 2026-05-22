@@ -229,6 +229,16 @@ body{font-family:{{ sans_en }};color:{{ fg }};-webkit-font-smoothing:antialiased
 </style></head><body><div class="page"><div class="title">{{ title_en }} · {{ title_cn }}</div><main class="main"><p class="en">{{ sentence_en_html }}</p><p class="cn">{{ sentence_cn }}</p></main><section class="vocab">{{ vocab_html }}</section></div></body></html>"""
 
 
+_FALLBACK_LISTEN_SCROLL_TEMPLATE = """<!doctype html><html><head><meta charset="utf-8"><style>
+*{margin:0;padding:0;box-sizing:border-box}html,body{width:1280px;height:720px;overflow:hidden;background:#0f1115;color:#e8ecf3}
+body{font-family:{{ sans_en }}}.lp{width:100%;height:100%;display:grid;grid-template-columns:7fr 3fr;grid-template-rows:auto 1fr auto;grid-template-areas:"top top" "article vocab" "controls vocab"}
+.top{grid-area:top;background:#161a22;padding:14px 18px;font-family:{{ serif_en }};font-size:18px}.article{grid-area:article;overflow:hidden;padding:30px 70px}.scroll{height:100%;overflow:hidden}
+.p{font-family:{{ serif_en }};font-size:25px;line-height:1.72;color:#a5adbb;margin-bottom:1em}.read{color:rgba(232,236,243,.28)}.current{color:#fff;background:rgba(255,209,102,.16);border-left:4px solid #ffd166;padding-left:10px;margin-left:-14px}
+.vocab{grid-area:vocab;background:#161a22;border-left:1px solid rgba(255,255,255,.08);padding:18px;overflow:hidden}.cn{font-family:{{ serif_cn }};font-size:{{ translation_size }}px;line-height:1.42;margin-bottom:14px}
+.grid{display:grid;grid-template-columns:repeat({{ vocab_cols }},1fr);gap:8px}.controls{grid-area:controls;background:#161a22;padding:16px 70px}.bar{height:5px;background:#1d222c}.fill{height:100%;width:{{ progress_pct }}%;background:#ffd166}
+</style></head><body><div class="lp"><div class="top">{{ title_en }}</div><main class="article"><div class="scroll" id="articleScroll">{{ article_html }}</div></main><aside class="vocab"><div class="cn">{{ translation }}</div><div class="grid">{{ vocab_html }}</div></aside><footer class="controls"><div class="bar"><div class="fill"></div></div></footer></div><script>(()=>{const b=document.getElementById('articleScroll');const c=b&&b.querySelector('[data-current=true]');if(b&&c)b.scrollTop=Math.max(0,c.offsetTop-(b.clientHeight-c.offsetHeight)/2)})()</script></body></html>"""
+
+
 def _load_template(name: str, fallback: str) -> str:
     try:
         return (TEMPLATE_DIR / name).read_text(encoding="utf-8")
@@ -259,6 +269,79 @@ def _learning_words(words: list[dict[str, Any]], sentence: str, short_max: int =
     """Keep the vocabulary strip readable: fewer words for long sentences."""
     limit = long_max if len(sentence or "") > 170 else short_max
     return words[:limit]
+
+
+def _listen_vocab_entry(w: dict[str, Any]) -> str:
+    meta = " ".join(part for part in [str(w.get("ipa") or "").strip(), str(w.get("pos") or "").strip()] if part)
+    return (
+        '<div class="lp-vocab-item">'
+        f'<div class="lp-vocab-term">{_esc(w.get("en"))}</div>'
+        f'{f"<div class=\"lp-vocab-meta\">{_esc(meta)}</div>" if meta else ""}'
+        f'<div class="lp-vocab-meaning">{_esc(w.get("cn"))}</div>'
+        '</div>'
+    )
+
+
+def _listen_article_html(sentences: list[dict[str, Any]], current_index: int) -> str:
+    groups: list[tuple[int, list[dict[str, Any]]]] = []
+    for item in sentences:
+        para = int(item.get("para") or 0)
+        if not groups or groups[-1][0] != para:
+            groups.append((para, []))
+        groups[-1][1].append(item)
+
+    html_parts: list[str] = []
+    for _para, rows in groups:
+        sent_html: list[str] = []
+        for row in rows:
+            idx = int(row.get("index", 0))
+            classes = ["lp-sent"]
+            if idx < current_index:
+                classes.append("read")
+            if idx == current_index:
+                classes.append("current")
+            current_attr = ' data-current="true"' if idx == current_index else ""
+            sent_html.append(
+                f'<span class="{" ".join(classes)}" data-idx="{idx}"{current_attr}>{_esc(row.get("text"))} </span>'
+            )
+        html_parts.append(f'<p class="lp-para p">{"".join(sent_html)}</p>')
+    return "".join(html_parts)
+
+
+def render_listen_scroll_16x9(frame: dict[str, Any], pal: dict[str, str]) -> str:
+    """Listening-mode video frame: full article scroll state + all vocab for current sentence."""
+    s = frame["sentence"]
+    words = frame.get("words", [])
+    n_words = len(words)
+    vocab_cols = 1 if n_words <= 5 else 2 if n_words <= 16 else 3
+    vocab_term_size = 18 if n_words <= 6 else 15 if n_words <= 10 else 12.5 if n_words <= 16 else 10.5
+    vocab_cn_size = 13 if n_words <= 6 else 11.5 if n_words <= 10 else 10 if n_words <= 16 else 8.8
+    vocab_meta_size = 11 if n_words <= 6 else 9.5 if n_words <= 16 else 8
+    vocab_pad_y = 8 if n_words <= 8 else 6 if n_words <= 12 else 4 if n_words <= 18 else 3
+    translation = str(s.get("cn") or "")
+    translation_size = _text_band(translation, [(70, 21), (120, 18), (9999, 16)])
+    if n_words > 16:
+        translation_size = min(translation_size, 15)
+    progress_pct = (s["index"] / s["total"] * 100) if s.get("total") else 0
+    vocab_html = "".join(_listen_vocab_entry(w) for w in words) or '<div class="lp-empty">本句无标记生词</div>'
+    article_html = _listen_article_html(frame.get("article_sentences", []), int(s.get("source_index", s["index"] - 1)))
+    return _render_template("listen_scroll_16x9.html", _FALLBACK_LISTEN_SCROLL_TEMPLATE, {
+        "serif_en": SERIF_EN, "serif_cn": SERIF_CN, "sans_en": SANS_EN, "sans_cn": SANS_CN,
+        "title_en": _esc(frame.get("titleEn")),
+        "provider_label": _esc(frame.get("providerLabel", "")),
+        "sentence_index": f'{int(s["index"]):02d}',
+        "sentence_total": f'{int(s["total"]):02d}',
+        "article_html": article_html,
+        "translation": _esc(translation),
+        "vocab_html": vocab_html,
+        "vocab_cols": vocab_cols,
+        "vocab_term_size": vocab_term_size,
+        "vocab_cn_size": vocab_cn_size,
+        "vocab_meta_size": vocab_meta_size,
+        "vocab_pad_y": vocab_pad_y,
+        "translation_size": translation_size,
+        "progress_pct": f"{progress_pct:.2f}",
+    })
 
 
 # ───────── H3「Marginalia」横屏 1280×720 → 1920×1080 ─────────
@@ -322,6 +405,7 @@ RATIO_SPEC = {
     # ratio: (renderer, base_w, base_h, device_scale_factor → 输出 target_w×target_h)
     "16:9": {"render": render_h3, "w": 1280, "h": 720, "dsf": 1.5, "out_w": 1920, "out_h": 1080, "design": "H3 Marginalia"},
     "9:16": {"render": render_v3, "w": 540, "h": 960, "dsf": 2.0, "out_w": 1080, "out_h": 1920, "design": "V3 Annotated"},
+    "listen-scroll-16:9": {"render": render_listen_scroll_16x9, "w": 1280, "h": 720, "dsf": 1.5, "out_w": 1920, "out_h": 1080, "design": "Listening Scroll"},
 }
 
 

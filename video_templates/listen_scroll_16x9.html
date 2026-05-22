@@ -1,0 +1,287 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body {
+        width: 1280px;
+        height: 720px;
+        overflow: hidden;
+        background: #0f1115;
+        color: #e8ecf3;
+        font-family: {{ sans_en }};
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+      .lp {
+        width: 100%;
+        height: 100%;
+        display: grid;
+        grid-template-columns: minmax(0, 7fr) minmax(0, 3fr);
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        grid-template-areas:
+          "top top"
+          "article vocab"
+          "controls vocab";
+        background: #0f1115;
+      }
+      .lp-top {
+        grid-area: top;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 18px;
+        background: #161a22;
+        border-bottom: 1px solid rgba(255,255,255,.08);
+      }
+      .lp-icon {
+        width: 36px;
+        height: 36px;
+        border-radius: 8px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: #1d222c;
+        color: #a5adbb;
+        font-size: 18px;
+      }
+      .lp-title-wrap { min-width: 0; flex: 1; }
+      .lp-title {
+        font-family: {{ serif_en }};
+        font-size: 18px;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .lp-sub {
+        margin-top: 2px;
+        color: #6c7484;
+        font-size: 12px;
+      }
+      .lp-article {
+        grid-area: article;
+        min-height: 0;
+        overflow: hidden;
+        padding: 30px 70px 34px;
+        position: relative;
+      }
+      .lp-article::before,
+      .lp-article::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        height: 62px;
+        pointer-events: none;
+        z-index: 2;
+      }
+      .lp-article::before {
+        top: 0;
+        background: linear-gradient(#0f1115, rgba(15,17,21,0));
+      }
+      .lp-article::after {
+        bottom: 0;
+        background: linear-gradient(rgba(15,17,21,0), #0f1115);
+      }
+      .lp-scroll {
+        height: 100%;
+        overflow: hidden;
+      }
+      .lp-para {
+        font-family: {{ serif_en }};
+        font-size: 25px;
+        line-height: 1.72;
+        margin: 0 0 1.08em;
+        color: #a5adbb;
+      }
+      .lp-sent {
+        border-radius: 5px;
+        padding: 2px 1px;
+        transition: none;
+      }
+      .lp-sent.read {
+        color: rgba(232,236,243,.28);
+      }
+      .lp-sent.current {
+        color: #f7f8fb;
+        background: rgba(255, 209, 102, .16);
+        border-left: 4px solid #ffd166;
+        padding-left: 10px;
+        margin-left: -14px;
+        box-decoration-break: clone;
+        -webkit-box-decoration-break: clone;
+      }
+      .lp-vocab {
+        grid-area: vocab;
+        min-height: 0;
+        overflow: hidden;
+        border-left: 1px solid rgba(255,255,255,.08);
+        background: #161a22;
+        display: flex;
+        flex-direction: column;
+      }
+      .lp-vocab-head {
+        padding: 15px 18px 10px;
+        border-bottom: 1px solid rgba(255,255,255,.08);
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .lp-vocab-title {
+        font-size: 13px;
+        letter-spacing: .08em;
+        color: #ffd166;
+        text-transform: uppercase;
+        font-weight: 700;
+      }
+      .lp-vocab-index {
+        color: #6c7484;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .lp-vocab-body {
+        padding: 16px 18px 18px;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .lp-translation {
+        flex: 0 0 auto;
+        padding-bottom: 12px;
+        border-bottom: 1px dashed rgba(255,255,255,.12);
+      }
+      .lp-translation-label {
+        color: #6c7484;
+        font-size: 11px;
+        margin-bottom: 6px;
+      }
+      .lp-translation-text {
+        font-family: {{ serif_cn }};
+        font-size: {{ translation_size }}px;
+        line-height: 1.42;
+        color: #e8ecf3;
+      }
+      .lp-vocab-grid {
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: repeat({{ vocab_cols }}, minmax(0, 1fr));
+        gap: 8px;
+        align-content: start;
+      }
+      .lp-vocab-item {
+        min-width: 0;
+        border-left: 2px solid #ffd166;
+        background: #1d222c;
+        padding: {{ vocab_pad_y }}px 9px;
+      }
+      .lp-vocab-term {
+        font-family: {{ serif_en }};
+        font-size: {{ vocab_term_size }}px;
+        line-height: 1.12;
+        color: #f7f8fb;
+        font-weight: 650;
+        overflow-wrap: anywhere;
+      }
+      .lp-vocab-meta {
+        margin-top: 2px;
+        font-size: {{ vocab_meta_size }}px;
+        line-height: 1.15;
+        color: #a5adbb;
+        font-style: italic;
+      }
+      .lp-vocab-meaning {
+        margin-top: 3px;
+        font-family: {{ serif_cn }};
+        font-size: {{ vocab_cn_size }}px;
+        line-height: 1.22;
+        color: #d9dee8;
+        overflow-wrap: anywhere;
+      }
+      .lp-empty {
+        color: #6c7484;
+        font-size: 14px;
+      }
+      .lp-controls {
+        grid-area: controls;
+        padding: 13px 70px 17px;
+        background: #161a22;
+        border-top: 1px solid rgba(255,255,255,.08);
+      }
+      .lp-progress-bar {
+        width: 100%;
+        height: 5px;
+        border-radius: 999px;
+        background: #1d222c;
+        overflow: hidden;
+      }
+      .lp-progress-fill {
+        width: {{ progress_pct }}%;
+        height: 100%;
+        border-radius: inherit;
+        background: #ffd166;
+      }
+      .lp-progress-meta {
+        margin-top: 8px;
+        display: flex;
+        justify-content: center;
+        gap: 8px;
+        color: #a5adbb;
+        font-size: 13px;
+        font-variant-numeric: tabular-nums;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="lp">
+      <header class="lp-top">
+        <div class="lp-icon">←</div>
+        <div class="lp-title-wrap">
+          <div class="lp-title">{{ title_en }}</div>
+          <div class="lp-sub">Listening scroll video · {{ provider_label }}</div>
+        </div>
+        <div class="lp-icon">↻</div>
+        <div class="lp-icon">◐</div>
+        <div class="lp-icon">⛶</div>
+      </header>
+
+      <main class="lp-article">
+        <div class="lp-scroll" id="articleScroll">{{ article_html }}</div>
+      </main>
+
+      <aside class="lp-vocab">
+        <div class="lp-vocab-head">
+          <span class="lp-vocab-title">当前句生词</span>
+          <span class="lp-vocab-index">{{ sentence_index }} / {{ sentence_total }}</span>
+        </div>
+        <div class="lp-vocab-body">
+          <section class="lp-translation">
+            <div class="lp-translation-label">中文译文</div>
+            <div class="lp-translation-text">{{ translation }}</div>
+          </section>
+          <section class="lp-vocab-grid">{{ vocab_html }}</section>
+        </div>
+      </aside>
+
+      <footer class="lp-controls">
+        <div class="lp-progress-bar"><div class="lp-progress-fill"></div></div>
+        <div class="lp-progress-meta"><span>{{ sentence_index }}</span><span>/</span><span>{{ sentence_total }}</span></div>
+      </footer>
+    </div>
+    <script>
+      (() => {
+        const box = document.getElementById("articleScroll");
+        const current = box && box.querySelector("[data-current='true']");
+        if (!box || !current) return;
+        const top = current.offsetTop - Math.max(0, (box.clientHeight - current.offsetHeight) / 2);
+        box.scrollTop = Math.max(0, top);
+      })();
+    </script>
+  </body>
+</html>
