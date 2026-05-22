@@ -271,12 +271,11 @@ class VideoExportRequest(BaseModel):
 
 
 class VideoRenderRequest(BaseModel):
-    """路线 C：把第三版设计（H3 横屏 / V3 竖屏）渲染成帧素材包。
-    默认只在服务器出帧+脚本，由用户本地跑 ffmpeg；assemble=True 才在服务器直接合成 MP4。"""
+    """路线 C：服务器把第三版设计（H3 横屏 / V3 竖屏）出成「逐帧 HTML + 脚本」素材包，
+    截图与 ffmpeg 合成都在用户本机由 render.bat 完成（服务器无需浏览器/字体）。"""
     provider: str | None = None
     ratios: list[str] = ["16:9", "9:16"]
     palette: str = "warm"
-    assemble: bool = False
 
 
 class DictationItemsRequest(BaseModel):
@@ -3952,40 +3951,24 @@ def download_video_export_package(article_id: str, request: VideoExportRequest) 
 
 _VIDEO_ENRICH_SYSTEM = "你是英语词典助手。只输出 JSON，不要解释。"
 
-_RENDER_C_BAT = """@echo off
-chcp 65001 >nul
-cd /d "%~dp0"
-echo Rendering video with ffmpeg (concat frames + audio)...
-ffmpeg -y -f concat -safe 0 -i frames.txt -i audio.wav -c:v libx264 -pix_fmt yuv420p -r 25 -c:a aac -b:a 192k -shortest -vsync vfr out.mp4
-echo Done. Output: out.mp4
-pause
-"""
-
-_RENDER_C_SH = """#!/bin/sh
-set -e
-cd "$(dirname "$0")"
-echo "Rendering video with ffmpeg (concat frames + audio)..."
-ffmpeg -y -f concat -safe 0 -i frames.txt -i audio.wav -c:v libx264 -pix_fmt yuv420p -r 25 -c:a aac -b:a 192k -shortest -vsync vfr out.mp4
-echo "Done. Output: out.mp4"
-"""
-
 _RENDER_C_README = """英语精读视频导出包 · 第三版设计（H3 横屏 / V3 竖屏）
 =================================================
 
 每个 render_* 目录是一个独立的视频素材包：
-  f0000.png, f0001.png ...   逐帧画面（每帧一句/一子句，已是成片分辨率）
-  frames.txt                 ffmpeg concat 清单（每帧时长已写好）
-  audio.wav                  整篇朗读音频（与画面同源）
-  render.bat / render.sh     一键合成脚本
+  f0000.html, f0001.html ...  逐帧画面（HTML，含全部排版样式）
+  frames.txt                  ffmpeg concat 清单（每帧时长已写好）
+  audio.wav                   整篇朗读音频（与画面同源）
+  render.bat / render.sh      一键脚本：本机浏览器截图 + ffmpeg 合成
 
-在本机合成（你当前的流程）：
-  1. 安装 ffmpeg（https://ffmpeg.org/download.html），确保终端能运行 ffmpeg。
+在本机合成（两步全自动）：
+  1. 装好两样：Chrome 或 Edge（把 HTML 截成图）、ffmpeg（合成视频，https://ffmpeg.org）。
   2. 进入 render_16x9（横屏）或 render_9x16（竖屏）目录。
-  3. Windows 双击 render.bat；mac / Linux 运行  sh render.sh
-  4. 生成 out.mp4。
+     Windows 双击 render.bat；mac / Linux 运行  sh render.sh
+  3. 脚本会自动：用本机浏览器把每帧 HTML 截成 PNG → ffmpeg 合成 out.mp4。
 
 说明：
-  - 画面字体在服务器端渲染时已定稿，本机无需安装任何字体。
+  - 字体用的是你本机的字体，请确保系统有中文字体（Windows 自带宋体/雅黑即可）。
+  - 解压路径尽量不要含空格。
   - 16:9 = 1920×1080（B站/横屏）；9:16 = 1080×1920（抖音/小红书/竖屏）。
 """
 
@@ -4077,14 +4060,12 @@ def _build_video_frames(
 
 @app.post("/api/articles/{article_id}/video/render")
 def video_render_package(article_id: str, request: VideoRenderRequest) -> dict[str, Any]:
-    """把第三版设计（H3 横屏 / V3 竖屏）渲染成 HTML 帧并合成 MP4（无 ffmpeg 时导出帧+脚本）。"""
+    """服务器把第三版设计（H3/V3）出成「逐帧 HTML + frames.txt + audio + render 脚本」素材包；
+    截图和 ffmpeg 合成都在用户本机由 render.bat 完成（服务器无需浏览器/中文字体）。"""
     article = find_article(article_id)
     items = listening_sentence_items(article)
     if not items:
         raise HTTPException(400, "无法切分出句子。")
-    browser = video_render.find_browser()
-    if not browser:
-        raise HTTPException(400, "未找到 Chrome / Edge 浏览器，无法把设计渲染成视频帧。请安装 Chrome 或 Edge 后重试。")
 
     provider = _resolve_export_provider(article, article_id, items, request.provider)
     ctx = _build_aligned_context(article, article_id, items, provider)
@@ -4116,7 +4097,6 @@ def video_render_package(article_id: str, request: VideoRenderRequest) -> dict[s
         "author": "", "year": "",
     }
 
-    ffmpeg = video_render.find_ffmpeg()
     pal = video_render.get_palette(request.palette)
     out_dir = VIDEO_EXPORT_DIR / article_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -4135,39 +4115,25 @@ def video_render_package(article_id: str, request: VideoRenderRequest) -> dict[s
             shutil.rmtree(frames_dir, ignore_errors=True)
         frames_dir.mkdir(parents=True, exist_ok=True)
 
-        def _shot(job: tuple[int, dict[str, Any]]) -> tuple[int, str, float]:
-            idx, fr = job
-            png = frames_dir / f"f{idx:04d}.png"
-            video_render.screenshot_html(render(fr, pal), ratio, png, browser)
-            return idx, str(png), fr["end_ms"] - fr["begin_ms"]
+        # 服务器只写「逐帧 HTML」；PNG 由本机 render.bat 用浏览器现截。
+        rendered: list[dict[str, Any]] = []
+        for idx, fr in enumerate(frames):
+            (frames_dir / f"f{idx:04d}.html").write_text(render(fr, pal), encoding="utf-8")
+            rendered.append({"png": f"f{idx:04d}.png", "dur_ms": fr["end_ms"] - fr["begin_ms"]})
 
-        rendered: list[Any] = [None] * len(frames)
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            for idx, png, dur in pool.map(_shot, list(enumerate(frames))):
-                rendered[idx] = {"png": png, "dur_ms": dur}
-
-        list_path = frames_dir / "frames.txt"
-        video_render.write_concat_list(rendered, list_path)
+        video_render.write_concat_list(rendered, frames_dir / "frames.txt")
         (frames_dir / "audio.wav").write_bytes(ctx["audio_path"].read_bytes())
-        (frames_dir / "render.bat").write_text(_RENDER_C_BAT, encoding="utf-8")
-        (frames_dir / "render.sh").write_text(_RENDER_C_SH, encoding="utf-8", newline="\n")
+        (frames_dir / "render.bat").write_text(video_render.render_bat(ratio), encoding="utf-8")
+        (frames_dir / "render.sh").write_text(video_render.render_sh(ratio), encoding="utf-8", newline="\n")
         (frames_dir / "README.txt").write_text(_RENDER_C_README, encoding="utf-8")
 
-        entry: dict[str, Any] = {
+        outputs[ratio] = {
             "design": spec["design"],
             "frames": len(frames),
             "frames_dir": str(frames_dir),
             "resolution": f'{spec["out_w"]}x{spec["out_h"]}',
-            "mp4": None,
+            "note": "本机运行 render.bat（需 Chrome/Edge + ffmpeg）→ 自动截图并合成 out.mp4。",
         }
-        # 默认只出帧素材包，由用户本地跑 render.bat 合成；assemble=True 才在服务器直接合成。
-        if request.assemble and ffmpeg:
-            out_mp4 = out_dir / f"video_{slug}.mp4"
-            video_render.assemble_mp4(list_path, frames_dir / "audio.wav", out_mp4, ffmpeg)
-            entry["mp4"] = str(out_mp4)
-        else:
-            entry["note"] = "已导出帧序列 + render.bat：进入该目录运行 render.bat（需本机 ffmpeg）即可合成 MP4。"
-        outputs[ratio] = entry
 
     if not outputs:
         raise HTTPException(400, "没有可渲染的画面（请检查比例与对齐数据）。")
@@ -4175,14 +4141,13 @@ def video_render_package(article_id: str, request: VideoRenderRequest) -> dict[s
     save_json(out_dir / "render_meta.json", {
         "article_id": article_id, "title": article.get("title", ""),
         "provider": provider, "palette": request.palette, "design": "v3",
-        "ffmpeg": bool(ffmpeg), "outputs": outputs,
+        "outputs": outputs,
     })
     return {
         "article_id": article_id, "provider": provider,
-        "ffmpeg_available": bool(ffmpeg), "browser": browser,
         "outputs": outputs,
-        "hint": "已在服务器合成 MP4。" if (request.assemble and ffmpeg)
-                else "已打包帧素材：解压后进入 render_16x9 / render_9x16 目录运行 render.bat（需本机 ffmpeg）合成 MP4。",
+        "hint": "已打包逐帧 HTML 素材：解压后进入 render_16x9 / render_9x16 目录运行 render.bat"
+                "（本机需 Chrome/Edge + ffmpeg），自动截图并合成 out.mp4。",
     }
 
 
@@ -4195,14 +4160,10 @@ def download_video_render_package(article_id: str, request: VideoRenderRequest) 
     zip_path = VIDEO_EXPORT_DIR / f"{article_id}_{provider}_v3.zip"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for entry in result.get("outputs", {}).values():
-            mp4 = entry.get("mp4")
-            if mp4 and Path(mp4).exists():
-                zf.write(mp4, arcname=Path(mp4).name)
-            else:
-                fdir = Path(entry["frames_dir"])
-                for p in sorted(fdir.iterdir()):
-                    if p.is_file():
-                        zf.write(p, arcname=f"{fdir.name}/{p.name}")
+            fdir = Path(entry["frames_dir"])
+            for p in sorted(fdir.iterdir()):
+                if p.is_file():
+                    zf.write(p, arcname=f"{fdir.name}/{p.name}")
     return FileResponse(zip_path, media_type="application/zip", filename=f"{zip_stem}.zip")
 
 

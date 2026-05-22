@@ -12,9 +12,6 @@ from __future__ import annotations
 
 import html
 import re
-import shutil
-import subprocess
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -320,54 +317,7 @@ RATIO_SPEC = {
 }
 
 
-# ───────── 无头浏览器截图 ─────────
-
-_BROWSER_CANDIDATES = [
-    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-]
-
-
-def find_browser() -> str | None:
-    for name in ("chrome", "msedge", "chromium", "chromium-browser", "google-chrome"):
-        found = shutil.which(name)
-        if found:
-            return found
-    for path in _BROWSER_CANDIDATES:
-        if Path(path).exists():
-            return path
-    return None
-
-
-def screenshot_html(html_text: str, ratio: str, out_png: Path, browser: str) -> None:
-    """把一帧 HTML 用无头浏览器截成精确尺寸 PNG（device-scale-factor 放大到 target）。"""
-    spec = RATIO_SPEC[ratio]
-    with tempfile.TemporaryDirectory() as td:
-        html_path = Path(td) / "frame.html"
-        html_path.write_text(html_text, encoding="utf-8")
-        profile = Path(td) / "prof"
-        cmd = [
-            browser, "--headless=new", "--disable-gpu", "--hide-scrollbars",
-            "--no-sandbox", "--disable-extensions", "--disable-dev-shm-usage",
-            f"--user-data-dir={profile}",
-            f"--force-device-scale-factor={spec['dsf']}",
-            f"--window-size={spec['w']},{spec['h']}",
-            "--default-background-color=00000000",
-            f"--screenshot={out_png}",
-            html_path.as_uri(),
-        ]
-        subprocess.run(cmd, capture_output=True, timeout=60, check=False)
-    if not out_png.exists():
-        raise RuntimeError(f"浏览器截图失败：{out_png.name}（浏览器：{browser}）")
-
-
-# ───────── ffmpeg 合成 ─────────
-
-def find_ffmpeg() -> str | None:
-    return shutil.which("ffmpeg")
-
+# ───────── 本地合成脚本（服务器只出 HTML，截图 + ffmpeg 都在用户本机跑）─────────
 
 def write_concat_list(frames: list[dict[str, Any]], list_path: Path) -> None:
     """concat demuxer 清单：每帧 PNG 持续 duration_ms（最后一帧需重复一次收尾）。"""
@@ -382,15 +332,55 @@ def write_concat_list(frames: list[dict[str, Any]], list_path: Path) -> None:
     list_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def assemble_mp4(list_path: Path, audio_path: Path, out_mp4: Path, ffmpeg: str) -> None:
-    cmd = [
-        ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(list_path),
-        "-i", str(audio_path),
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "25",
-        "-c:a", "aac", "-b:a", "192k", "-shortest",
-        "-vsync", "vfr", str(out_mp4),
-    ]
-    proc = subprocess.run(cmd, capture_output=True, timeout=600, check=False)
-    if proc.returncode != 0 or not out_mp4.exists():
-        err = proc.stderr.decode("utf-8", "ignore")[-800:]
-        raise RuntimeError(f"ffmpeg 合成失败：{err}")
+# render.bat：用本机 Chrome/Edge 把每帧 HTML 截成 PNG（device-scale-factor 放大到成片分辨率），
+# 再用本机 ffmpeg 按 frames.txt 合成 out.mp4。@@DSF@@/@@W@@/@@H@@ 按比例填充。
+_LOCAL_BAT = r"""@echo off
+chcp 65001 >nul
+cd /d "%~dp0"
+setlocal
+set "BROWSER="
+for %%P in ("%ProgramFiles%\Google\Chrome\Application\chrome.exe" "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe" "%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe" "%ProgramFiles%\Microsoft\Edge\Application\msedge.exe") do if exist "%%~P" set "BROWSER=%%~P"
+if "%BROWSER%"=="" ( echo [ERROR] No Chrome/Edge found. Please install Chrome or Edge. & pause & exit /b 1 )
+echo Using browser: %BROWSER%
+echo Rendering frames to PNG ...
+for %%F in (f*.html) do "%BROWSER%" --headless=new --disable-gpu --hide-scrollbars --no-sandbox --disable-extensions --user-data-dir="%CD%\.chrome-profile" --force-device-scale-factor=@@DSF@@ --window-size=@@W@@,@@H@@ --default-background-color=00000000 --screenshot="%%~nF.png" "file:///%CD:\=/%/%%F" >nul 2>&1
+where ffmpeg >nul 2>&1
+if errorlevel 1 ( echo [ERROR] ffmpeg not found on PATH. Install ffmpeg ^(https://ffmpeg.org^) then re-run. & pause & exit /b 1 )
+echo Assembling out.mp4 ...
+ffmpeg -y -f concat -safe 0 -i frames.txt -i audio.wav -c:v libx264 -pix_fmt yuv420p -r 25 -c:a aac -b:a 192k -shortest -vsync vfr out.mp4
+echo Done. Output: out.mp4
+pause
+"""
+
+_LOCAL_SH = r"""#!/bin/sh
+set -e
+cd "$(dirname "$0")"
+BROWSER=""
+for c in google-chrome google-chrome-stable chromium chromium-browser "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"; do
+  if command -v "$c" >/dev/null 2>&1; then BROWSER="$c"; break; fi
+  if [ -x "$c" ]; then BROWSER="$c"; break; fi
+done
+[ -z "$BROWSER" ] && { echo "[ERROR] No Chrome/Chromium found."; exit 1; }
+echo "Using browser: $BROWSER"
+for f in f*.html; do
+  "$BROWSER" --headless=new --disable-gpu --hide-scrollbars --no-sandbox --user-data-dir="$PWD/.chrome-profile" --force-device-scale-factor=@@DSF@@ --window-size=@@W@@,@@H@@ --default-background-color=00000000 --screenshot="${f%.html}.png" "file://$PWD/$f" >/dev/null 2>&1
+done
+command -v ffmpeg >/dev/null 2>&1 || { echo "[ERROR] ffmpeg not found."; exit 1; }
+ffmpeg -y -f concat -safe 0 -i frames.txt -i audio.wav -c:v libx264 -pix_fmt yuv420p -r 25 -c:a aac -b:a 192k -shortest -vsync vfr out.mp4
+echo "Done. Output: out.mp4"
+"""
+
+
+def _fill(tpl: str, ratio: str) -> str:
+    spec = RATIO_SPEC[ratio]
+    return (tpl.replace("@@DSF@@", str(spec["dsf"]))
+               .replace("@@W@@", str(spec["w"]))
+               .replace("@@H@@", str(spec["h"])))
+
+
+def render_bat(ratio: str) -> str:
+    return _fill(_LOCAL_BAT, ratio)
+
+
+def render_sh(ratio: str) -> str:
+    return _fill(_LOCAL_SH, ratio)
