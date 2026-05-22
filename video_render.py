@@ -272,11 +272,9 @@ def _learning_words(words: list[dict[str, Any]], sentence: str, short_max: int =
 
 
 def _listen_vocab_entry(w: dict[str, Any]) -> str:
-    meta = " ".join(part for part in [str(w.get("ipa") or "").strip(), str(w.get("pos") or "").strip()] if part)
     return (
         '<div class="lp-vocab-item">'
         f'<div class="lp-vocab-term">{_esc(w.get("en"))}</div>'
-        f'{f"<div class=\"lp-vocab-meta\">{_esc(meta)}</div>" if meta else ""}'
         f'<div class="lp-vocab-meaning">{_esc(w.get("cn"))}</div>'
         '</div>'
     )
@@ -314,14 +312,13 @@ def render_listen_scroll_16x9(frame: dict[str, Any], pal: dict[str, str]) -> str
     words = frame.get("words", [])
     n_words = len(words)
     vocab_cols = 1 if n_words <= 5 else 2 if n_words <= 16 else 3
-    vocab_term_size = 18 if n_words <= 6 else 15 if n_words <= 10 else 12.5 if n_words <= 16 else 10.5
-    vocab_cn_size = 13 if n_words <= 6 else 11.5 if n_words <= 10 else 10 if n_words <= 16 else 8.8
-    vocab_meta_size = 11 if n_words <= 6 else 9.5 if n_words <= 16 else 8
-    vocab_pad_y = 8 if n_words <= 8 else 6 if n_words <= 12 else 4 if n_words <= 18 else 3
+    vocab_term_size = 25 if n_words <= 6 else 21 if n_words <= 10 else 17 if n_words <= 16 else 14
+    vocab_cn_size = 18 if n_words <= 6 else 16 if n_words <= 10 else 13.5 if n_words <= 16 else 11.5
+    vocab_pad_y = 10 if n_words <= 8 else 8 if n_words <= 12 else 6 if n_words <= 18 else 4
     translation = str(s.get("cn") or "")
-    translation_size = _text_band(translation, [(70, 21), (120, 18), (9999, 16)])
+    translation_size = _text_band(translation, [(70, 25), (120, 22), (9999, 19)])
     if n_words > 16:
-        translation_size = min(translation_size, 15)
+        translation_size = min(translation_size, 18)
     progress_pct = (s["index"] / s["total"] * 100) if s.get("total") else 0
     vocab_html = "".join(_listen_vocab_entry(w) for w in words) or '<div class="lp-empty">本句无标记生词</div>'
     article_html = _listen_article_html(frame.get("article_sentences", []), int(s.get("source_index", s["index"] - 1)))
@@ -337,7 +334,6 @@ def render_listen_scroll_16x9(frame: dict[str, Any], pal: dict[str, str]) -> str
         "vocab_cols": vocab_cols,
         "vocab_term_size": vocab_term_size,
         "vocab_cn_size": vocab_cn_size,
-        "vocab_meta_size": vocab_meta_size,
         "vocab_pad_y": vocab_pad_y,
         "translation_size": translation_size,
         "progress_pct": f"{progress_pct:.2f}",
