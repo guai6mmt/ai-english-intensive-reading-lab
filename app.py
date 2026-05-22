@@ -19,6 +19,7 @@ import time
 import uuid
 import wave
 import zipfile
+import zlib
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
@@ -49,6 +50,7 @@ DATA_DIR = ROOT / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 AUDIO_CACHE_DIR = DATA_DIR / "audio_cache"
 COVERS_DIR = DATA_DIR / "covers"
+VIDEO_EXPORT_DIR = DATA_DIR / "video_export"
 STATIC_DIR = ROOT / "static"
 LIBRARY_PATH = DATA_DIR / "library.json"
 VOCAB_PATH = DATA_DIR / "vocabulary.json"
@@ -258,6 +260,12 @@ class AlignedAudioRequest(BaseModel):
     voice: str | None = None
     language_type: str | None = None
     provider: str | None = None
+
+
+class VideoExportRequest(BaseModel):
+    provider: str | None = None
+    ratios: list[str] = ["16:9"]
+    audio_format: str = "wav"
 
 
 class DictationItemsRequest(BaseModel):
@@ -3607,6 +3615,328 @@ def listening_prepare(article_id: str) -> dict[str, Any]:
     }
 
 
+# ───────── Video export（路线 B：后端导素材，本地 ffmpeg 合成）─────────
+
+_RENDER_BAT_16X9 = """@echo off
+chcp 65001 >nul
+echo Rendering 16:9 video with ffmpeg...
+ffmpeg -y -loop 1 -i background_16x9.png -i audio.wav -vf "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,ass=subtitle_16x9.ass" -c:v libx264 -tune stillimage -pix_fmt yuv420p -c:a aac -b:a 192k -shortest out_16x9.mp4
+echo Done. Output: out_16x9.mp4
+pause
+"""
+
+_RENDER_SH_16X9 = """#!/bin/sh
+set -e
+echo "Rendering 16:9 video with ffmpeg..."
+ffmpeg -y -loop 1 -i background_16x9.png -i audio.wav \\
+  -vf "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,ass=subtitle_16x9.ass" \\
+  -c:v libx264 -tune stillimage -pix_fmt yuv420p \\
+  -c:a aac -b:a 192k -shortest out_16x9.mp4
+echo "Done. Output: out_16x9.mp4"
+"""
+
+_RENDER_README = """英语精读视频导出包（B1 · 16:9）
+================================
+
+文件清单：
+  subtitle_16x9.ass   双语字幕 + 难词框 + 中文标题（render 默认使用，完整版式）
+  subtitle_16x9.srt   纯双语字幕（备用，仅英文 + 中文译文）
+  background_16x9.png  16:9 深色占位背景
+  audio.wav           整篇朗读音频（与字幕同源，同一 TTS provider）
+  render.bat          Windows 一键合成脚本
+  render.sh           mac / Linux 一键合成脚本
+  meta.json           元信息（标题 / provider / 句数 / 时长）
+
+使用步骤：
+  1. 安装 ffmpeg（https://ffmpeg.org/download.html），确保终端能运行 ffmpeg。
+  2. Windows：双击 render.bat；mac / Linux：在本目录运行  sh render.sh
+  3. 稍候片刻，生成 out_16x9.mp4。
+
+可调整：
+  - 背景：默认使用 background_16x9.png 纯色占位。替换为同名图片即可使用自定义背景。
+  - 中文字体：字幕样式默认用 Microsoft YaHei（Windows 自带）。若中文显示为方块，
+    请把 subtitle_16x9.ass 中 [V4+ Styles] 各 Style 的 Fontname 改成本机已装的中文字体
+    （如 mac 改为 PingFang SC）。
+"""
+
+
+def _write_solid_png(path: Path, width: int, height: int, rgb: tuple[int, int, int]) -> None:
+    """Write a tiny dependency-free RGB PNG for the default video background."""
+    raw = b"".join(b"\x00" + bytes(rgb) * width for _ in range(height))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk("IHDR".encode(), struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk("IDAT".encode(), zlib.compress(raw, level=9))
+        + chunk("IEND".encode(), b"")
+    )
+    path.write_bytes(png)
+
+
+def _safe_download_stem(text: str, fallback: str = "video_export") -> str:
+    stem = re.sub(r"[^A-Za-z0-9\u4e00-\u9fff._-]+", "_", text).strip("._-")
+    return stem[:80] or fallback
+
+
+def _ms_to_srt_time(ms: float) -> str:
+    """毫秒 → SRT 时间戳 HH:MM:SS,mmm。"""
+    total = max(0, int(ms))
+    h, total = divmod(total, 3_600_000)
+    m, total = divmod(total, 60_000)
+    s, millis = divmod(total, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{millis:03d}"
+
+
+def _valid_alignment(a: dict[str, Any]) -> bool:
+    b, e = a.get("begin_ms"), a.get("end_ms")
+    return isinstance(b, (int, float)) and isinstance(e, (int, float)) and e > b
+
+
+def _resolve_export_provider(
+    article: dict[str, Any], article_id: str, items: list[dict[str, Any]], requested: str | None
+) -> str:
+    """确定导出哪个 provider 的音频/对齐：显式请求 > 已生成(cached)的 > 全局设置。
+    与听力前端的选择逻辑一致，保证音画同源。"""
+    req = (requested or "").strip().lower()
+    if req in ("qwen", "minimax"):
+        return req
+    for provider in ("qwen", "minimax"):
+        try:
+            ctx = _build_aligned_context(article, article_id, items, provider)
+        except HTTPException:
+            continue
+        if ctx["audio_path"].exists() and ctx["align_path"].exists():
+            return provider
+    return task_provider("audio")
+
+
+def _build_bilingual_srt(
+    items: list[dict[str, Any]],
+    translations: dict[int, str],
+    alignments: dict[int, dict[str, Any]],
+) -> str:
+    """生成双语 SRT：每句 英文 + 中文译文，时间取该句对齐的 begin_ms/end_ms。
+    没有有效时间轴的句子跳过。"""
+    blocks: list[str] = []
+    n = 0
+    for i, item in enumerate(items):
+        a = alignments.get(i)
+        if not a or not _valid_alignment(a):
+            continue
+        n += 1
+        en = (item.get("text") or "").strip()
+        zh = (translations.get(i) or "").strip()
+        body = f"{en}\n{zh}" if zh else en
+        blocks.append(
+            f"{n}\n{_ms_to_srt_time(a['begin_ms'])} --> {_ms_to_srt_time(a['end_ms'])}\n{body}\n"
+        )
+    return "\n".join(blocks)
+
+
+# 难词强调色：听力 accent #FFD166 → ASS 颜色为 &HAABBGGRR（BGR），即 &H0066D1FF&
+_ASS_ACCENT = "&H0066D1FF&"
+
+# 16:9（1920×1080）样式表。Alignment 走 numpad：2=底中、8=顶中、9=右上。
+# SubEN/SubZH 左右各留 260 边距 + WrapStyle:0 让长英文句自动均匀折行。
+_ASS_HEADER = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+ScaledBorderAndShadow: yes
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Title,Microsoft YaHei,46,&H00FFFFFF,&H000000FF,&H00202020,&H64000000,1,0,0,0,100,100,0,0,1,2,1,8,60,60,30,1
+Style: SubEN,Arial,52,&H00FFFFFF,&H000000FF,&H00101010,&H00000000,0,0,0,0,100,100,0,0,1,3,1,2,260,260,92,1
+Style: SubZH,Microsoft YaHei,36,&H00D8D8D8,&H000000FF,&H00101010,&H00000000,0,0,0,0,100,100,0,0,1,3,1,2,260,260,42,1
+Style: VocabBox,Microsoft YaHei,32,&H00FFFFFF,&H000000FF,&H00101010,&H64000000,0,0,0,0,100,100,0,0,3,2,0,9,40,40,40,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+
+def _ms_to_ass_time(ms: float) -> str:
+    """毫秒 → ASS 时间戳 H:MM:SS.cc（百分秒）。"""
+    total = max(0, int(ms))
+    h, total = divmod(total, 3_600_000)
+    m, total = divmod(total, 60_000)
+    s, total = divmod(total, 1000)
+    cs = total // 10
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def _ass_escape(text: str) -> str:
+    """转义放入 ASS Dialogue 文本字段的内容，避免 { } \\ 破坏样式标签或布局。
+    顺序：先处理原文已有的反斜杠，再加我们自己合法的 \\{ \\} \\N。"""
+    if not text:
+        return ""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\\", "\\​")  # 反斜杠后插零宽空格(U+200B)，阻止其被当作 \tag 前缀
+    text = text.replace("{", "\\{").replace("}", "\\}")
+    text = text.replace("\n", "\\N")
+    return text
+
+
+def _build_vocab_box(vocab: list[Any]) -> str:
+    """难词框文本：每词「单词(强调色加粗) + 中文翻译」，最多 6 个，用 \\N 分行。"""
+    parts: list[str] = []
+    for v in vocab[:6]:
+        if not isinstance(v, dict):
+            continue
+        term = _ass_escape(str(v.get("term") or "").strip())
+        if not term:
+            continue
+        meaning = _ass_escape(str(v.get("meaning") or "").strip())
+        if meaning:
+            parts.append(f"{{\\b1\\c{_ASS_ACCENT}}}{term}{{\\r}}  {meaning}")
+        else:
+            parts.append(f"{{\\b1\\c{_ASS_ACCENT}}}{term}{{\\r}}")
+    return "\\N".join(parts)
+
+
+def _build_ass_16x9(
+    title: str,
+    items: list[dict[str, Any]],
+    translations: dict[int, str],
+    vocab_by_index: dict[int, list[Any]],
+    alignments: dict[int, dict[str, Any]],
+    total_ms: int,
+) -> str:
+    """生成 16:9 ASS：顶部中文标题(常显) + 底部双语字幕 + 右上难词框(逐句更新)。"""
+    lines = [_ASS_HEADER.rstrip("\n")]
+    if title:
+        end = _ms_to_ass_time(max(total_ms, 1000))
+        lines.append(f"Dialogue: 0,0:00:00.00,{end},Title,,0,0,0,,{_ass_escape(title)}")
+    for i, item in enumerate(items):
+        a = alignments.get(i)
+        if not a or not _valid_alignment(a):
+            continue
+        start = _ms_to_ass_time(a["begin_ms"])
+        end = _ms_to_ass_time(a["end_ms"])
+        en = _ass_escape((item.get("text") or "").strip())
+        zh = _ass_escape((translations.get(i) or "").strip())
+        if en:
+            lines.append(f"Dialogue: 0,{start},{end},SubEN,,0,0,0,,{en}")
+        if zh:
+            lines.append(f"Dialogue: 0,{start},{end},SubZH,,0,0,0,,{zh}")
+        box = _build_vocab_box(vocab_by_index.get(i) or [])
+        if box:
+            lines.append(f"Dialogue: 0,{start},{end},VocabBox,,0,0,0,,{{\\pos(1560,140)}}{box}")
+    return "\n".join(lines) + "\n"
+
+
+@app.post("/api/articles/{article_id}/video/export-package")
+def video_export_package(article_id: str, request: VideoExportRequest) -> dict[str, Any]:
+    """路线 B（B1）：导出 16:9 视频素材包（ASS/SRT 字幕 + 同源音频 + ffmpeg 脚本）。
+    素材落在本机 data/video_export/{id}/，用户进该目录跑 render 脚本即可合成 MP4。"""
+    article = find_article(article_id)
+    items = listening_sentence_items(article)
+    if not items:
+        raise HTTPException(400, "无法切分出句子。")
+
+    # provider 解析 → 算 key/路径（音画同源）
+    provider = _resolve_export_provider(article, article_id, items, request.provider)
+    ctx = _build_aligned_context(article, article_id, items, provider)
+    if not (ctx["audio_path"].exists() and ctx["align_path"].exists()):
+        label = AUDIO_PROVIDER_LABELS.get(provider, provider)
+        raise HTTPException(
+            400,
+            f"该文章尚未生成 {label} 的整篇对齐音频，请先在听力模式用 {label} 生成后再导出。",
+        )
+
+    align_data = load_json(ctx["align_path"], {})
+    alignments = {
+        a["index"]: a
+        for a in align_data.get("alignments", [])
+        if isinstance(a, dict) and "index" in a
+    }
+    if not alignments:
+        raise HTTPException(400, "对齐数据为空，请在听力模式重新生成整篇音频。")
+
+    # 译文（缺则内部触发一次 prepare）
+    prep = listening_prepare(article_id)
+    translations = {s["index"]: s.get("translation", "") for s in prep.get("sentences", [])}
+    vocab_by_index = {s["index"]: s.get("vocab", []) for s in prep.get("sentences", [])}
+
+    srt = _build_bilingual_srt(items, translations, alignments)
+    if not srt.strip():
+        raise HTTPException(400, "没有有效的逐句时间轴，无法生成字幕。")
+    total_ms = max((a["end_ms"] for a in alignments.values() if _valid_alignment(a)), default=0)
+    ass = _build_ass_16x9(
+        article.get("title", ""),
+        items,
+        translations,
+        vocab_by_index,
+        alignments,
+        int(total_ms),
+    )
+
+    out_dir = VIDEO_EXPORT_DIR / article_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _write_solid_png(out_dir / "background_16x9.png", 1920, 1080, (15, 17, 21))
+    (out_dir / "subtitle_16x9.ass").write_text(ass, encoding="utf-8")
+    (out_dir / "subtitle_16x9.srt").write_text(srt, encoding="utf-8")
+    (out_dir / "audio.wav").write_bytes(ctx["audio_path"].read_bytes())
+    (out_dir / "render.bat").write_text(_RENDER_BAT_16X9, encoding="utf-8")
+    (out_dir / "render.sh").write_text(_RENDER_SH_16X9, encoding="utf-8", newline="\n")
+    (out_dir / "README.txt").write_text(_RENDER_README, encoding="utf-8")
+
+    save_json(out_dir / "meta.json", {
+        "article_id": article_id,
+        "title": article.get("title", ""),
+        "provider": provider,
+        "key": ctx["key"],
+        "ratio": "16:9",
+        "sentence_count": len(alignments),
+        "duration_ms": int(total_ms),
+    })
+
+    return {
+        "article_id": article_id,
+        "provider": provider,
+        "export_dir": str(out_dir),
+        "files": [
+            "background_16x9.png",
+            "subtitle_16x9.ass",
+            "subtitle_16x9.srt",
+            "audio.wav",
+            "render.bat",
+            "render.sh",
+            "README.txt",
+            "meta.json",
+        ],
+        "sentence_count": len(alignments),
+        "duration_ms": int(total_ms),
+        "hint": f"进入目录 {out_dir}，运行 render.bat (Windows) 或 sh render.sh (mac/Linux) 合成 out_16x9.mp4",
+    }
+
+
+@app.post("/api/articles/{article_id}/video/export-package/download")
+def download_video_export_package(article_id: str, request: VideoExportRequest) -> FileResponse:
+    result = video_export_package(article_id, request)
+    out_dir = Path(result["export_dir"])
+    provider = str(result.get("provider") or "audio")
+    title = str(find_article(article_id).get("title") or article_id)
+    zip_stem = _safe_download_stem(f"video_16x9_{title}_{provider}", f"video_16x9_{article_id}_{provider}")
+    zip_path = VIDEO_EXPORT_DIR / f"{article_id}_{provider}_16x9.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name in result.get("files", []):
+            file_path = out_dir / name
+            if file_path.exists() and file_path.is_file():
+                zf.write(file_path, arcname=name)
+    return FileResponse(zip_path, media_type="application/zip", filename=f"{zip_stem}.zip")
+
+
 @app.post("/api/articles/{article_id}/vocabulary/analyze")
 def vocabulary_analysis(article_id: str, refresh: bool = False) -> dict[str, Any]:
     article = find_article(article_id)
@@ -3855,6 +4185,7 @@ def delete_source(source_id: str) -> dict[str, Any]:
 
 AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 COVERS_DIR.mkdir(parents=True, exist_ok=True)
+VIDEO_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/audio", StaticFiles(directory=AUDIO_CACHE_DIR), name="audio")
 app.mount("/covers", StaticFiles(directory=COVERS_DIR), name="covers")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

@@ -44,14 +44,23 @@ body {
 }
 button { font: inherit; color: inherit; border: none; background: transparent; cursor: pointer; }
 
-/* ── Shell: three rows ── */
+/* ── Shell: article (left) + controls below it, vocab spans full height (right) ── */
 .lp {
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 3fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "top      top"
+    "article  vocab"
+    "controls vocab";
   height: 100vh;   /* fallback for browsers without dvh */
   height: 100dvh;  /* dynamic viewport — tracks mobile toolbars so the footer stays on-screen */
   width: 100vw;
 }
+.lp-top      { grid-area: top; }
+.lp-article  { grid-area: article; }
+.lp-vocab    { grid-area: vocab; }
+.lp-controls { grid-area: controls; }
 
 /* ── Top bar ── */
 .lp-top {
@@ -122,18 +131,27 @@ button { font: inherit; color: inherit; border: none; background: transparent; c
 }
 .lp-src-pill.cached .lp-src-dot { background: #3fbf7f; }
 .lp-src-pill[disabled] { opacity: 0.45; cursor: not-allowed; }
-
-/* ── Main split ── */
-.lp-main {
-  display: grid;
-  grid-template-columns: minmax(0, 7fr) minmax(0, 3fr);
-  overflow: hidden;
-  min-height: 0;
+.lp-video-export-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #2a2f3a);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  background: transparent;
+  line-height: 1;
+  font-size: 15px;
 }
+.lp-video-export-btn:hover:not(:disabled) { background: var(--bg-soft, rgba(255,255,255,0.05)); }
+.lp-video-export-btn:active:not(:disabled) { transform: scale(0.92); }
+.lp-video-export-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
 /* ── Article pane ── */
 .lp-article {
   overflow-y: auto;
+  min-height: 0;   /* let the grid row clip + scroll instead of stretching the shell */
   padding: 28px clamp(20px, 6vw, 80px) 32px;
   scroll-behavior: smooth;
   -webkit-overflow-scrolling: touch;
@@ -193,6 +211,7 @@ button { font: inherit; color: inherit; border: none; background: transparent; c
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-height: 0;   /* spans article + controls rows; let its body scroll */
 }
 .lp-vocab-head {
   display: flex;
@@ -243,13 +262,12 @@ button { font: inherit; color: inherit; border: none; background: transparent; c
   line-height: 1.7;
 }
 .lp-vocab-item {
-  padding: 10px 0;
+  padding: 8px 0;
   border-bottom: 1px solid var(--line);
 }
 .lp-vocab-item:last-child { border-bottom: none; }
 .lp-vocab-term    { font-family: var(--serif); font-size: 16px; font-weight: 600; color: var(--accent); }
-.lp-vocab-meaning { margin-top: 4px; font-size: 14px; color: var(--fg); }
-.lp-vocab-note    { margin-top: 4px; font-size: 12px; color: var(--fg-mute); line-height: 1.5; }
+.lp-vocab-meaning { margin-top: 3px; font-size: 14px; color: var(--fg); }
 .lp-vocab-translation {
   margin-top: 14px;
   padding-top: 12px;
@@ -401,11 +419,16 @@ button { font: inherit; color: inherit; border: none; background: transparent; c
   font-variant-numeric: tabular-nums;
 }
 
-/* ── Mobile portrait ── */
+/* ── Mobile portrait — stack top/article/vocab/controls; no side column ── */
 @media (orientation: portrait) and (max-width: 767px) {
-  .lp-main {
+  .lp {
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1.7fr) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1.7fr) minmax(0, 1fr) auto;
+    grid-template-areas:
+      "top"
+      "article"
+      "vocab"
+      "controls";
   }
   .lp-vocab {
     border-left: none;
@@ -416,6 +439,11 @@ button { font: inherit; color: inherit; border: none; background: transparent; c
   .lp-title    { font-size: 14px; }
   .lp-ctrl     { min-width: 46px; height: 42px; font-size: 16px; border-radius: 10px; }
   .lp-ctrl.lp-play { min-width: 68px; height: 50px; font-size: 18px; }
+  .lp-video-export-btn { display: none; }
+}
+
+@media (max-width: 900px), (max-height: 500px) {
+  .lp-video-export-btn { display: none; }
 }
 
 /* ── Narrow phones (≤360px): shrink controls so all five stay on-screen ── */

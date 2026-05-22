@@ -25,6 +25,7 @@ const state = {
   alignedReady: false,
   alignedLoading: false,
   alignedFailed: false,
+  videoExporting: false,
   isPlaying: false,
   playbackRate: 1.0,
   fallbackActive: false,
@@ -115,7 +116,6 @@ function renderVocab(idx) {
         <div class="lp-vocab-item">
           <div class="lp-vocab-term">${esc(v.term)}</div>
           ${v.meaning ? `<div class="lp-vocab-meaning">${esc(v.meaning)}</div>` : ""}
-          ${v.note    ? `<div class="lp-vocab-note">${esc(v.note)}</div>` : ""}
         </div>`).join("");
 
   if (s.translation) {
@@ -556,7 +556,79 @@ function renderSourceSelector() {
       <span class="lp-src-dot"></span>${esc(v.label)}
     </button>`;
   }).join("");
-  box.innerHTML = `<span class="lp-source-label">朗读模型</span>${pills}`;
+  const active = state.variants.find((v) => v.provider === state.provider);
+  const ready = Boolean((active && active.cached) || state.alignedReady);
+  const downloadDisabled = state.alignedLoading || state.videoExporting || !ready ? " disabled" : "";
+  const downloadTitle = ready
+    ? "下载 16:9 视频素材包"
+    : "请先生成当前朗读模型的整篇音频";
+  box.innerHTML = `<span class="lp-source-label">朗读模型</span>${pills}
+    <button class="lp-video-export-btn" id="lpVideoExportBtn" aria-label="下载 16:9 视频素材包" title="${downloadTitle}"${downloadDisabled}>⇩</button>`;
+}
+
+function filenameFromDisposition(value) {
+  if (!value) return "";
+  const utf = value.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf) {
+    try { return decodeURIComponent(utf[1]); } catch {}
+  }
+  const plain = value.match(/filename="?([^";]+)"?/i);
+  return plain ? plain[1] : "";
+}
+
+async function downloadVideoPackage() {
+  if (state.videoExporting) return;
+  const active = state.variants.find((v) => v.provider === state.provider);
+  if (state.alignedLoading) {
+    setSub("整篇音频仍在生成中，请完成后再下载视频包");
+    return;
+  }
+  if (!state.alignedReady && !(active && active.cached)) {
+    setSub("请先生成当前朗读模型的整篇音频，再下载视频包");
+    return;
+  }
+  const label = (active && active.label) || state.provider || "当前模型";
+  const ok = confirm(
+    `将下载当前文章的 16:9 视频素材包，包含音频、字幕、背景和 render.bat。\n\n` +
+    `当前朗读模型：${label}\n\n` +
+    `请确认你正在电脑上操作。是否继续下载？`
+  );
+  if (!ok) return;
+
+  const btn = $("lpVideoExportBtn");
+  state.videoExporting = true;
+  if (btn) btn.disabled = true;
+  setSub("正在打包视频素材…");
+  try {
+    const res = await fetch(`/api/articles/${encodeURIComponent(state.articleId)}/video/export-package/download`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: state.provider || undefined }),
+    });
+    if (!res.ok) {
+      let msg = `${res.status}`;
+      try { const d = await res.json(); msg = d.detail || d.message || msg; } catch {}
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    const filename = filenameFromDisposition(res.headers.get("Content-Disposition"))
+      || `video_16x9_${state.articleId}.zip`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    setSub("视频素材包已开始下载");
+  } catch (err) {
+    console.warn("Video export download failed:", err);
+    setSub(`下载失败：${err.message}`);
+  } finally {
+    state.videoExporting = false;
+    renderSourceSelector();
+  }
 }
 
 async function switchProvider(provider) {
@@ -682,6 +754,11 @@ function wireEvents() {
   });
   $("lpRegenBtn").addEventListener("click", regenerateAligned);
   $("lpSource").addEventListener("click", (e) => {
+    const exportBtn = e.target.closest(".lp-video-export-btn");
+    if (exportBtn && !exportBtn.disabled) {
+      downloadVideoPackage();
+      return;
+    }
     const pill = e.target.closest(".lp-src-pill");
     if (pill && !pill.disabled) switchProvider(pill.dataset.provider);
   });
