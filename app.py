@@ -4025,8 +4025,7 @@ def _build_video_frames(
     ratio: str,
     title_meta: dict[str, str],
 ) -> list[dict[str, Any]]:
-    """逐句→显示分段→每帧数据（含字符占比时间轴）。一句多帧时共用 §index/total 计数。"""
-    budget = video_render.CHAR_BUDGET.get(ratio, 150)
+    """逐句→每句一帧。长句通过模板动态字号适配，避免打断学习者的完整句法感知。"""
     valid = [i for i in range(len(items)) if alignments.get(i) and _valid_alignment(alignments[i])]
     total = len(valid)
     frames: list[dict[str, Any]] = []
@@ -4046,15 +4045,13 @@ def _build_video_frames(
                 "en": term, "ipa": ph.get("ipa", ""), "pos": ph.get("pos", ""),
                 "cn": (v.get("meaning") or "").strip(),
             })
-        segs = video_render.segment_for_display(en, budget)
-        spans = video_render.distribute_time(segs, a["begin_ms"], a["end_ms"])
-        for seg_text, (b, e) in zip(segs, spans):
-            frames.append({
-                **title_meta,
-                "sentence": {"en": seg_text, "cn": cn, "index": sentence_no, "total": total},
-                "words": words,
-                "begin_ms": b, "end_ms": e,
-            })
+        frames.append({
+            **title_meta,
+            "sentence": {"en": en, "cn": cn, "index": sentence_no, "total": total},
+            "words": words,
+            "begin_ms": a["begin_ms"],
+            "end_ms": a["end_ms"],
+        })
     return frames
 
 

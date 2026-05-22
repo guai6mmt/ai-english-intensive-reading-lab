@@ -40,9 +40,9 @@ def _esc(text: Any) -> str:
     return html.escape(str(text or ""), quote=True)
 
 
-# ───────── 显示分段（回答"如何分段"：句子过长则按子句切，时间按字符占比分配）─────────
+# ───────── 显示分段（保留兼容；当前视频导出按完整句子逐帧呈现）─────────
 
-# 各方向每帧英文字符预算（超过则切子段）。横屏主栏宽、竖屏窄，预算不同。
+# 旧版按字符预算切句；新版在 app.py 中保持一句一帧，并通过动态字号适配长句。
 CHAR_BUDGET = {"16:9": 150, "9:16": 78}
 # 切分优先级：先在子句边界(; :)，再破折号 / 长逗号，最后兜底按词软切。
 _CLAUSE_RE = re.compile(r"(?<=[;:])\s+")
@@ -207,12 +207,33 @@ def _doc(body: str, pal: dict[str, str], width: int, height: int) -> str:
     )
 
 
+def _text_band(text: str, bands: list[tuple[int, float]]) -> float:
+    """Pick a font size from length thresholds, keeping full sentences on one frame."""
+    n = len(text or "")
+    for limit, size in bands:
+        if n <= limit:
+            return size
+    return bands[-1][1]
+
+
+def _learning_words(words: list[dict[str, Any]], sentence: str, short_max: int = 4, long_max: int = 3) -> list[dict[str, Any]]:
+    """Keep the vocabulary strip readable: fewer words for long sentences."""
+    limit = long_max if len(sentence or "") > 170 else short_max
+    return words[:limit]
+
+
 # ───────── H3「Marginalia」横屏 1280×720 → 1920×1080 ─────────
 
 def render_h3(frame: dict[str, Any], pal: dict[str, str]) -> str:
     s = frame["sentence"]
-    words = frame.get("words", [])[:6]
-    en_size, cn_size = 50, 22
+    en_text = s.get("en", "")
+    cn_text = s.get("cn", "")
+    words = _learning_words(frame.get("words", []), en_text)
+    en_size = _text_band(en_text, [(90, 40), (130, 36), (175, 32), (230, 28), (9999, 24)])
+    cn_size = _text_band(cn_text, [(55, 23), (90, 21), (130, 19), (9999, 17)])
+    en_leading = 1.23 if en_size >= 34 else 1.18
+    cn_leading = 1.55 if cn_size >= 21 else 1.42
+    main_gap = 24 if len(en_text) <= 150 else 16
     kicker_bits = " · ".join(b for b in ["Essay", frame.get("author", ""), frame.get("year", "")] if b)
 
     title_bar = (
@@ -232,14 +253,14 @@ def render_h3(frame: dict[str, Any], pal: dict[str, str]) -> str:
 
     main_col = (
         f'<div style="grid-column:1;grid-row:2;display:flex;flex-direction:column;justify-content:flex-start;'
-        f'gap:30px;min-width:0;padding:34px 8px 0 0">'
+        f'gap:{main_gap}px;min-width:0;padding:30px 8px 0 0">'
         f'<div>{_kicker("EN", pal, 9, "margin-bottom:8px;display:block")}'
-        f'<p style="font-family:{SERIF_EN};font-size:{en_size}px;line-height:1.22;color:{pal["fg"]};'
-        f'letter-spacing:-.4px;text-wrap:pretty">{_mark_vocab(s["en"], words, pal)}</p></div>'
+        f'<p style="font-family:{SERIF_EN};font-size:{en_size}px;line-height:{en_leading};color:{pal["fg"]};'
+        f'letter-spacing:0;text-wrap:pretty">{_mark_vocab(en_text, words, pal)}</p></div>'
         f'<div style="width:60px;height:1px;background:{pal["rule"]}"></div>'
         f'<div>{_kicker("CN · 译文", pal, 9, "margin-bottom:8px;display:block")}'
-        f'<p style="font-family:{SERIF_CN};font-size:{cn_size}px;line-height:1.7;color:{pal["fg"]};'
-        f'opacity:.85;letter-spacing:1px">{_esc(s["cn"])}</p></div></div>'
+        f'<p style="font-family:{SERIF_CN};font-size:{cn_size}px;line-height:{cn_leading};color:{pal["fg"]};'
+        f'opacity:.86;letter-spacing:0">{_esc(cn_text)}</p></div></div>'
     )
 
     notes = "".join(_footnote_entry(w, pal, i + 1, i == len(words) - 1) for i, w in enumerate(words))
@@ -267,8 +288,13 @@ def render_h3(frame: dict[str, Any], pal: dict[str, str]) -> str:
 
 def render_v3(frame: dict[str, Any], pal: dict[str, str]) -> str:
     s = frame["sentence"]
-    words = frame.get("words", [])[:6]
-    en_size, cn_size = 42, 21
+    en_text = s.get("en", "")
+    cn_text = s.get("cn", "")
+    words = _learning_words(frame.get("words", []), en_text)
+    en_size = _text_band(en_text, [(80, 34), (120, 31), (165, 27), (220, 24), (9999, 21)])
+    cn_size = _text_band(cn_text, [(55, 22), (90, 20), (130, 19), (9999, 17.5)])
+    en_leading = 1.28 if en_size >= 30 else 1.2
+    cn_leading = 1.55 if cn_size >= 20 else 1.42
 
     title_bar = (
         f'<div style="padding:0 36px 18px;border-bottom:1px solid {pal["fg"]};margin-bottom:26px">'
@@ -281,23 +307,23 @@ def render_v3(frame: dict[str, Any], pal: dict[str, str]) -> str:
     )
 
     sentence = (
-        f'<div style="padding:48px 36px 0;flex:1 1 auto;display:flex;flex-direction:column;justify-content:flex-start;gap:24px">'
-        f'<p style="font-family:{SERIF_EN};font-size:{en_size}px;line-height:1.3;color:{pal["fg"]};'
-        f'letter-spacing:-.3px;text-wrap:pretty">{_mark_vocab(s["en"], words, pal)}</p>'
+        f'<div style="padding:42px 36px 0;flex:1 1 auto;display:flex;flex-direction:column;justify-content:flex-start;gap:20px;min-height:0">'
+        f'<p style="font-family:{SERIF_EN};font-size:{en_size}px;line-height:{en_leading};color:{pal["fg"]};'
+        f'letter-spacing:0;text-wrap:pretty">{_mark_vocab(en_text, words, pal)}</p>'
         f'<div style="height:1px;background:{pal["rule"]}"></div>'
-        f'<p style="font-family:{SERIF_CN};font-size:{cn_size}px;line-height:1.7;color:{pal["fg"]};'
-        f'opacity:.88;letter-spacing:1px">{_esc(s["cn"])}</p></div>'
+        f'<p style="font-family:{SERIF_CN};font-size:{cn_size}px;line-height:{cn_leading};color:{pal["fg"]};'
+        f'opacity:.88;letter-spacing:0">{_esc(cn_text)}</p></div>'
     )
 
-    # 难词：每行 3 个，全部显示（视频不能滑动，绝不隐藏）。底部高度随词数自然增长。
+    # 难词：学习视频中只保留最关键的 3-4 个，避免挤占完整句子的阅读空间。
     if words:
         cards_html = "".join(_word_card_boxed(w, pal) for w in words)
         strip = (
-            f'<div style="margin-top:24px">'
+            f'<div style="margin-top:18px;flex:0 0 auto">'
             f'<div style="display:flex;align-items:baseline;gap:10px;padding:0 36px;margin-bottom:12px">'
             f'{_kicker("Vocabulary · 难词", pal, 10)}<div style="flex:1;height:1px;background:{pal["rule"]}"></div>'
             f'<span style="font-family:{SANS_EN};font-size:9px;color:{pal["fg2"]};letter-spacing:1px">{len(words)} words</span></div>'
-            f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:0 36px">{cards_html}</div>'
+            f'<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;padding:0 36px">{cards_html}</div>'
             f'<div style="margin-top:22px;padding:0 36px">{_progress(s["index"], s["total"], pal)}</div></div>'
         )
     else:
@@ -348,7 +374,8 @@ if not exist "f0000.png" ( echo [ERROR] No frames were captured. Make sure Chrom
 where ffmpeg >nul 2>&1
 if errorlevel 1 ( echo [ERROR] ffmpeg not found on PATH. Install ffmpeg ^(https://ffmpeg.org^) then re-run. & pause & exit /b 1 )
 echo Assembling out.mp4 ...
-ffmpeg -y -f concat -safe 0 -i frames.txt -i audio.wav -c:v libx264 -pix_fmt yuv420p -r 25 -c:a aac -b:a 192k -shortest -fps_mode vfr out.mp4
+ffmpeg -y -f concat -safe 0 -i frames.txt -i audio.wav -vf "fps=25,format=yuv420p" -c:v libx264 -c:a aac -b:a 192k -shortest out.mp4
+if errorlevel 1 ( echo [ERROR] ffmpeg failed. No out.mp4 was produced. & pause & exit /b 1 )
 echo Done. Output: out.mp4
 pause
 """
@@ -368,7 +395,10 @@ for f in f*.html; do
 done
 ls f*.png >/dev/null 2>&1 || { echo "[ERROR] No frames were captured. Check the browser install and folder permissions."; exit 1; }
 command -v ffmpeg >/dev/null 2>&1 || { echo "[ERROR] ffmpeg not found."; exit 1; }
-ffmpeg -y -f concat -safe 0 -i frames.txt -i audio.wav -c:v libx264 -pix_fmt yuv420p -r 25 -c:a aac -b:a 192k -shortest -fps_mode vfr out.mp4
+if ! ffmpeg -y -f concat -safe 0 -i frames.txt -i audio.wav -vf "fps=25,format=yuv420p" -c:v libx264 -c:a aac -b:a 192k -shortest out.mp4; then
+  echo "[ERROR] ffmpeg failed. No out.mp4 was produced."
+  exit 1
+fi
 echo "Done. Output: out.mp4"
 """
 
