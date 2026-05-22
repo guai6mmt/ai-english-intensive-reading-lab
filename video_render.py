@@ -232,11 +232,11 @@ body{font-family:{{ sans_en }};color:{{ fg }};-webkit-font-smoothing:antialiased
 _FALLBACK_LISTEN_SCROLL_TEMPLATE = """<!doctype html><html><head><meta charset="utf-8"><style>
 *{margin:0;padding:0;box-sizing:border-box}html,body{width:1280px;height:720px;overflow:hidden;background:#0f1115;color:#e8ecf3}
 body{font-family:{{ sans_en }}}.lp{width:100%;height:100%;display:grid;grid-template-columns:7fr 3fr;grid-template-rows:auto 1fr auto;grid-template-areas:"top top" "article vocab" "controls vocab"}
-.top{grid-area:top;background:#161a22;padding:14px 18px;font-family:{{ serif_en }};font-size:18px}.article{grid-area:article;overflow:hidden;padding:30px 70px}.scroll{height:100%;overflow:hidden}
+.top{grid-area:top;background:#161a22;padding:13px 28px 14px}.title{font-family:{{ serif_en }};font-size:21px;font-weight:600}.title-cn{font-family:{{ serif_cn }};font-size:14px;color:#a5adbb;margin-top:3px}.article{grid-area:article;overflow:hidden;padding:30px 70px}.scroll{height:100%;overflow:hidden}
 .p{font-family:{{ serif_en }};font-size:25px;line-height:1.72;color:#a5adbb;margin-bottom:1em}.read{color:rgba(232,236,243,.28)}.current{color:#fff;background:rgba(255,209,102,.16);border-left:4px solid #ffd166;padding-left:10px;margin-left:-14px}
 .vocab{grid-area:vocab;background:#161a22;border-left:1px solid rgba(255,255,255,.08);padding:18px;overflow:hidden}.cn{font-family:{{ serif_cn }};font-size:{{ translation_size }}px;line-height:1.42;margin-bottom:14px}
 .grid{display:grid;grid-template-columns:repeat({{ vocab_cols }},1fr);gap:8px}.controls{grid-area:controls;background:#161a22;padding:16px 70px}.bar{height:5px;background:#1d222c}.fill{height:100%;width:{{ progress_pct }}%;background:#ffd166}
-</style></head><body><div class="lp"><div class="top">{{ title_en }}</div><main class="article"><div class="scroll" id="articleScroll">{{ article_html }}</div></main><aside class="vocab"><div class="cn">{{ translation }}</div><div class="grid">{{ vocab_html }}</div></aside><footer class="controls"><div class="bar"><div class="fill"></div></div></footer></div><script>(()=>{const b=document.getElementById('articleScroll');const c=b&&b.querySelector('[data-current=true]');if(b&&c)b.scrollTop=Math.max(0,c.offsetTop-(b.clientHeight-c.offsetHeight)/2)})()</script></body></html>"""
+</style></head><body><div class="lp"><div class="top"><div class="title">{{ title_en }}</div><div class="title-cn">{{ title_cn }}</div></div><main class="article"><div class="scroll" id="articleScroll">{{ article_html }}</div></main><aside class="vocab"><div class="cn">{{ translation }}</div><div class="grid">{{ vocab_html }}</div></aside><footer class="controls"><div class="bar"><div class="fill"></div></div></footer></div><script>(()=>{const b=document.getElementById('articleScroll');const c=b&&b.querySelector('[data-current=true]');if(b&&c)b.scrollTop=Math.max(0,c.offsetTop-(b.clientHeight-c.offsetHeight)/2)})()</script></body></html>"""
 
 
 def _load_template(name: str, fallback: str) -> str:
@@ -328,7 +328,7 @@ def render_listen_scroll_16x9(frame: dict[str, Any], pal: dict[str, str]) -> str
     return _render_template("listen_scroll_16x9.html", _FALLBACK_LISTEN_SCROLL_TEMPLATE, {
         "serif_en": SERIF_EN, "serif_cn": SERIF_CN, "sans_en": SANS_EN, "sans_cn": SANS_CN,
         "title_en": _esc(frame.get("titleEn")),
-        "provider_label": _esc(frame.get("providerLabel", "")),
+        "title_cn": _esc(frame.get("titleCn")),
         "sentence_index": f'{int(s["index"]):02d}',
         "sentence_total": f'{int(s["total"]):02d}',
         "article_html": article_html,

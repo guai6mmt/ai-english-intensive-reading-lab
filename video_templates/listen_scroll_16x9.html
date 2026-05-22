@@ -30,35 +30,27 @@
         grid-area: top;
         display: flex;
         align-items: center;
-        gap: 10px;
-        padding: 12px 18px;
+        padding: 13px 28px 14px;
         background: #161a22;
         border-bottom: 1px solid rgba(255,255,255,.08);
-      }
-      .lp-icon {
-        width: 36px;
-        height: 36px;
-        border-radius: 8px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        background: #1d222c;
-        color: #a5adbb;
-        font-size: 18px;
       }
       .lp-title-wrap { min-width: 0; flex: 1; }
       .lp-title {
         font-family: {{ serif_en }};
-        font-size: 18px;
+        font-size: 21px;
         font-weight: 600;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      .lp-sub {
-        margin-top: 2px;
-        color: #6c7484;
-        font-size: 12px;
+      .lp-title-cn {
+        margin-top: 3px;
+        font-family: {{ serif_cn }};
+        color: #a5adbb;
+        font-size: 14px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       .lp-article {
         grid-area: article;
@@ -241,14 +233,10 @@
   <body>
     <div class="lp">
       <header class="lp-top">
-        <div class="lp-icon">←</div>
         <div class="lp-title-wrap">
           <div class="lp-title">{{ title_en }}</div>
-          <div class="lp-sub">Listening scroll video · {{ provider_label }}</div>
+          <div class="lp-title-cn">{{ title_cn }}</div>
         </div>
-        <div class="lp-icon">↻</div>
-        <div class="lp-icon">◐</div>
-        <div class="lp-icon">⛶</div>
       </header>
 
       <main class="lp-article">
