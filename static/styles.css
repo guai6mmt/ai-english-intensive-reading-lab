@@ -408,6 +408,11 @@ body { font-feature-settings: "ss01", "cv11"; }
   background: var(--highlight);
   box-shadow: 0 0 0 1px rgba(20,25,28,0.06);
 }
+.reader .sent.audio-current {
+  background:var(--accent-soft);
+  box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 38%,transparent);
+}
+.reader .sent.audio-current::selection { background:var(--accent); color:var(--paper); }
 .reader .sent.long {
   border-bottom: 1px dotted var(--accent);
 }

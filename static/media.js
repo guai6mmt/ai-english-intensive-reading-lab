@@ -186,9 +186,15 @@ async function playItem(id, autoPlay = true) {
 
 function updatePlayer() {
   const item = state.current;
+  const articleButton = $("openCurrentArticleBtn");
   $("playerBar").dataset.open = Boolean(item);
   $("nowTitle").textContent = item?.title || "选择一条音频开始练习";
-  $("nowMeta").textContent = item ? (item.collection_name || item.relative_path || item.original_name) : "—";
+  $("nowMeta").textContent = item
+    ? `${item.collection_name || item.relative_path || item.original_name}${item.linked_article_id ? " · 点击进入配套文章" : ""}`
+    : "—";
+  articleButton.disabled = !item?.linked_article_id;
+  articleButton.setAttribute("aria-label", item?.linked_article_id ? `进入《${item.title}》的配套文章` : "当前音频没有配套文章");
+  articleButton.title = item?.linked_article_id ? "进入配套文章并继续播放" : "当前音频尚未配套文章";
   $("playBtn").innerHTML = item && !audio.paused ? ICONS.pause : ICONS.play;
   $("favoriteBtn").innerHTML = ICONS.star;
   $("favoriteBtn").classList.toggle("is-favorite", Boolean(item?.favorite));
@@ -196,6 +202,20 @@ function updatePlayer() {
   $("currentTime").textContent = formatTime(audio.currentTime);
   $("duration").textContent = formatTime(audio.duration);
   $("seek").value = Number.isFinite(audio.duration) && audio.duration ? Math.round(audio.currentTime / audio.duration * 1000) : 0;
+}
+
+async function openCurrentArticle() {
+  const item = state.current;
+  if (!item?.linked_article_id) return;
+  await saveProgress();
+  const params = new URLSearchParams({
+    article: item.linked_article_id,
+    media: item.id,
+    position: String(Math.max(0, Math.round((audio.currentTime || 0) * 1000))),
+    rate: String(audio.playbackRate || 1),
+    autoplay: audio.paused ? "0" : "1",
+  });
+  location.href = `/?${params.toString()}`;
 }
 
 function persistPlayback() {
@@ -578,6 +598,7 @@ $("editForm").addEventListener("submit", async (event) => {
 });
 
 $("playBtn").addEventListener("click", () => state.current && (audio.paused ? audio.play() : audio.pause()));
+$("openCurrentArticleBtn").addEventListener("click", openCurrentArticle);
 $("prevBtn").addEventListener("click", () => moveTrack(-1));
 $("nextBtn").addEventListener("click", () => moveTrack(1));
 $("backBtn").addEventListener("click", () => { audio.currentTime = Math.max(0, audio.currentTime - 15); });

@@ -60,11 +60,17 @@ main { max-width:1500px; margin:auto; }
 .empty>div { font-size:42px; color:var(--accent); }
 .player { position:fixed; z-index:30; left:0; right:0; bottom:0; min-height:var(--dock-h); display:grid; grid-template-columns:minmax(260px,1fr) minmax(420px,1.6fr) minmax(240px,1fr); align-items:center; gap:24px; padding:8px 24px max(8px,env(safe-area-inset-bottom)); border-top:1px solid var(--dock-line); background:var(--dock); color:var(--dock-ink); box-shadow:var(--shadow-dock); }
 .now { display:flex; align-items:center; gap:11px; min-width:0; }
+.now-article { width:100%; padding:4px; border:0; border-radius:var(--radius); background:transparent; color:inherit; text-align:left; }
+.now-article:not(:disabled) { cursor:pointer; }
+.now-article:not(:disabled):hover,.now-article:not(:disabled):focus-visible { background:var(--dock-raised); outline:none; }
+.now-article:disabled { cursor:default; opacity:1; }
 .cover { display:grid; place-items:center; width:46px; height:46px; flex:0 0 auto; border-radius:var(--radius); background:var(--dock-raised); color:var(--dock-ink); font:700 15px var(--serif); }
-.now>div:last-child { min-width:0; }
+.now-copy { min-width:0; flex:1; }
 .now strong,.now small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .now strong { font-size:13px; font-weight:500; }
 .now small { margin-top:4px; color:var(--dock-muted); font:10px var(--mono); }
+.open-article-hint { flex:0 0 auto; color:var(--dock-muted); font-size:11px; opacity:0; transform:translateX(-3px); transition:opacity .15s,transform .15s; }
+.now-article:not(:disabled):hover .open-article-hint,.now-article:not(:disabled):focus-visible .open-article-hint { opacity:1; transform:translateX(0); }
 .transport-buttons { display:flex; justify-content:center; align-items:center; gap:10px; }
 .transport button,.player-actions button { width:32px; height:32px; border:0; border-radius:var(--radius-sm); background:transparent; color:inherit; padding:0; }
 .transport .play { width:40px; height:40px; border-radius:50%; background:var(--dock-key); color:var(--dock-key-ink); }

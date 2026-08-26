@@ -12,7 +12,7 @@
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
     <link rel="stylesheet" href="/static/tokens.css?v=20260826" />
     <link rel="stylesheet" href="/static/components.css?v=20260826" />
-    <link rel="stylesheet" href="/static/media.css?v=20260827" />
+    <link rel="stylesheet" href="/static/media.css?v=20260828" />
     <script src="/static/theme.js?v=20260826"></script>
     <script src="/static/auth.js"></script>
   </head>
@@ -74,7 +74,11 @@
 
       <footer class="player" id="playerBar" data-open="false">
         <audio id="audio"></audio>
-        <div class="now"><div class="cover">EL</div><div><strong id="nowTitle">选择一条音频开始练习</strong><small id="nowMeta">—</small></div></div>
+        <button class="now now-article" id="openCurrentArticleBtn" type="button" disabled aria-label="当前音频没有配套文章">
+          <span class="cover">EL</span>
+          <span class="now-copy"><strong id="nowTitle">选择一条音频开始练习</strong><small id="nowMeta">—</small></span>
+          <span class="open-article-hint" aria-hidden="true">进入文章 ›</span>
+        </button>
         <div class="transport">
           <div class="transport-buttons">
             <button id="prevBtn" aria-label="上一条"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5h2.2v14H7zM19 5v14l-9-7z"/></svg></button><button id="backBtn" aria-label="后退十五秒">−15</button>
@@ -143,6 +147,6 @@
       </div>
     </dialog>
 
-    <script src="/static/media.js?v=20260827"></script>
+    <script src="/static/media.js?v=20260828"></script>
   </body>
 </html>
