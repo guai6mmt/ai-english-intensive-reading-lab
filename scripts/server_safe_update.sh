@@ -19,6 +19,14 @@ SKIP_BACKUP="${SKIP_BACKUP:-0}"
 
 cd "$APP_DIR"
 
+# 只读取所需键，不直接 source .env（API Key 或中文占位内容可能含空格）。
+CONFIGURED_DATA_DIR=""
+if [ -f ".env" ]; then
+  CONFIGURED_DATA_DIR="$(sed -n 's/^ENGLISH_LAB_DATA_DIR=//p' .env | tail -n 1)"
+fi
+DATA_DIR="${ENGLISH_LAB_DATA_DIR:-${CONFIGURED_DATA_DIR:-${APP_DIR}/data}}"
+BACKUP_DIR="${APP_DIR}/backups"
+
 echo "==> 1/6 当前服务状态"
 if systemctl is-active --quiet "$SERVICE_NAME"; then
   echo "    服务正在运行：$SERVICE_NAME"
@@ -27,16 +35,15 @@ else
 fi
 
 # 备份 data 目录（小项目数据量不大，几秒就能完成；用户数据是最重要的）
-if [ "$SKIP_BACKUP" != "1" ] && [ -d "data" ]; then
+if [ "$SKIP_BACKUP" != "1" ] && [ -d "$DATA_DIR" ]; then
   STAMP=$(date +%Y%m%d-%H%M%S)
-  BACKUP_DIR="backups"
   mkdir -p "$BACKUP_DIR"
   BACKUP_FILE="${BACKUP_DIR}/data-backup-${STAMP}.tar.gz"
-  if [ -f "data/app.db" ] && command -v sqlite3 >/dev/null 2>&1; then
-    sqlite3 data/app.db ".backup '${BACKUP_DIR}/app-${STAMP}.db'"
+  if [ -f "${DATA_DIR}/app.db" ] && command -v sqlite3 >/dev/null 2>&1; then
+    sqlite3 "${DATA_DIR}/app.db" ".backup '${BACKUP_DIR}/app-${STAMP}.db'"
   fi
   echo "==> 2/6 备份数据库与应用数据 → ${BACKUP_FILE}"
-  tar --exclude='data/media' --exclude='data/app.db' --exclude='data/app.db-wal' --exclude='data/app.db-shm' -czf "${BACKUP_FILE}" data
+  tar --exclude='media' --exclude='app.db' --exclude='app.db-wal' --exclude='app.db-shm' -czf "${BACKUP_FILE}" -C "$DATA_DIR" .
   # 仅保留最近 5 份备份
   ls -1t backups/data-backup-*.tar.gz 2>/dev/null | tail -n +6 | xargs -r rm -f
   ls -1t backups/app-*.db 2>/dev/null | tail -n +6 | xargs -r rm -f

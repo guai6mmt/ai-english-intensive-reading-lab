@@ -1,250 +1,277 @@
 # AI English Intensive Reading Lab
 
-英文精读与私人听力资料库。支持文章导入（EPUB / DOCX / TXT）、正文清洗、长难句分析、词汇分层、阅读答题、听写跟读、写作反馈，以及服务器音频文件夹导入和手机播放。
+一个可自行部署的英语精读与听力训练系统。管理员可以在网页中导入文章和整个音频文件夹，学习者可以在电脑或手机上登录同一台服务器，继续阅读、听写和音频练习。
 
-```
-学习主线：文本检查 → 长难句 → 词汇 → 阅读答题 → 听写跟读 → 写作反馈
-```
+项目仓库：<https://github.com/guai6mmt/ai-english-intensive-reading-lab>
 
-## 音频库与手机使用
+## 系统功能
 
-- 管理网页可以选择整个电脑文件夹，批量导入 MP3 / M4A / AAC / WAV / FLAC / OGG / OPUS / M4B。
-- 服务器可以扫描 `MEDIA_IMPORT_ROOT` 下的目录，并复制到受管理的媒体存储。
-- 自动使用 SHA-256 去重，使用 ffprobe 读取时长、码率和标签。
-- 支持分类、搜索、标签、难度、收藏、回收站和多设备播放进度。
-- 播放接口支持 HTTP Range，可拖动进度、倍速播放、锁屏控制和后台播放。
-- 网页包含 PWA manifest；手机浏览器打开后可以添加到主屏幕。
+### 私人音频资料库
 
-首次启动会显示管理员创建页面。以后所有文章、模型设置和音频接口都需要登录。
-
----
-
-## Windows 一键启动（推荐）
-
-> 适合用 CMD 或直接双击运行的场景。
-
-### 第一步：下载项目
-
-打开 CMD，进入你想放项目的文件夹，然后：
-
-```cmd
-git clone https://github.com/guai6mmt/ai-english-intensive-reading-lab.git
-cd ai-english-intensive-reading-lab
-```
-
-> 没有 Git？到 [git-scm.com](https://git-scm.com/download/win) 下载安装后重新打开 CMD。
-
-### 第二步：配置 AI Key（可选，首次需要）
-
-```cmd
-copy .env.example .env
-notepad .env
-```
-
-填入你的 API Key，保存关闭。如果暂时没有 Key，可以先跳过，之后在网页设置里填。
-
-### 第三步：启动
-
-```cmd
-start.bat
-```
-
-脚本会自动完成：
-1. 检查 Python 是否安装
-2. 创建虚拟环境 `.venv`（首次约需 1 分钟）
-3. 安装所有依赖
-4. 加载 `.env` 配置
-5. 启动服务，**并自动打开浏览器**
-
-启动成功后，浏览器会自动打开：
-
-```
-http://127.0.0.1:8010
-```
-
-按 **Ctrl+C** 停止服务。
-
----
-
-### 以后每次使用
-
-进入项目文件夹，直接运行：
-
-```cmd
-start.bat
-```
-
-或者双击 `start.bat` 文件也可以。
-
----
-
-### 拉取最新代码后重启
-
-```cmd
-git pull origin main
-start.bat
-```
-
----
-
-## 系统要求
-
-| 项目 | 要求 |
+| 功能 | 具体能力 |
 |---|---|
-| Python | 3.10 或更高版本（[下载地址](https://www.python.org/downloads/)，安装时勾选 **Add Python to PATH**） |
-| Git | 任意版本（[下载地址](https://git-scm.com/download/win)） |
-| 操作系统 | Windows 10 / 11 |
+| 批量导入 | 网页选择整个文件夹上传，或让服务器扫描指定导入目录 |
+| 音频格式 | MP3、M4A、AAC、WAV、FLAC、OGG、OPUS、M4B |
+| 大文件处理 | 8 MB 分片上传、失败自动重试、最大文件大小可配置 |
+| 自动整理 | 使用 SHA-256 去重，通过 ffprobe 读取时长、码率和音频标签 |
+| 资料管理 | 修改标题、分类、难度和标签，支持搜索、筛选、排序、分页和回收站 |
+| 学习状态 | 收藏音频、记录播放位置，并在电脑和手机之间同步进度 |
+| 移动播放 | 响应式播放器、前后 15 秒、倍速、A-B 循环、锁屏控制和后台播放 |
+| 流媒体 | 登录后私有访问，支持 HTTP Range，可拖动进度且无需完整下载 |
+| PWA | 手机浏览器可“添加到主屏幕”，以接近原生应用的方式打开 |
 
----
+### 英语精读学习
 
-## 配置 AI Key
+| 功能 | 具体能力 |
+|---|---|
+| 内容导入 | 导入 EPUB、DOCX、TXT，保存到个人文章库 |
+| 文本预处理 | 正文提取、清洗和章节整理 |
+| 长难句分析 | 分析句子结构、语法成分及理解难点 |
+| 词汇学习 | 词频与难度分层、生词管理、语境学习 |
+| 阅读训练 | 阅读理解题、答题与结果记录 |
+| 听写跟读 | 结合文章和音频进行逐句听写、跟读训练 |
+| 写作反馈 | 使用 AI 对写作内容进行分析和反馈 |
+| 模型配置 | 支持 DeepSeek、Qwen/DashScope 与 MiniMax TTS，可在网页设置中填写 Key |
 
-`.env` 文件示例（复制自 `.env.example`）：
+### 管理与安全
 
-```env
-DEEPSEEK_API_KEY=你的 DeepSeek API Key
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-v4-flash
+- 首次访问创建唯一管理员账号，密码使用 Argon2 哈希保存。
+- 所有文章、设置和音频接口均受登录会话保护。
+- 使用 HttpOnly、SameSite Cookie 和 CSRF 校验；公网部署自动启用 Secure Cookie。
+- SQLite WAL 保存用户、媒体、收藏、进度、书签和导入任务。
+- 服务以非 root 用户运行，只监听 `127.0.0.1`，由 Caddy 提供 HTTPS。
+- 提供存活与就绪健康检查、自动重启和更新前数据库备份。
 
-QWEN_API_KEY=你的 Qwen / DashScope API Key
-QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-QWEN_MODEL=qwen-plus
+## 使用流程
 
-# 可选：听力模式整篇音频时间轴对齐
-DASHSCOPE_API_KEY=你的 DashScope API Key
-QWEN_ASR_MODEL=qwen3-asr-flash-filetrans
-OSS_ACCESS_KEY_ID=你的 OSS AccessKey ID
-OSS_ACCESS_KEY_SECRET=你的 OSS AccessKey Secret
-OSS_BUCKET=你的 Bucket 名称
-OSS_ENDPOINT=https://oss-cn-hangzhou.aliyuncs.com
-OSS_TEMP_PREFIX=asr-temp/
+```text
+管理员登录
+  ├─ 导入文章 → 清洗 → 长难句 / 词汇 / 阅读 / 听写 / 写作
+  └─ 导入音频文件夹 → 自动校验去重 → 分类整理 → 手机选择音频练习
+                                                    └─ 自动同步收藏与进度
 ```
 
-也可以直接在网页右上角 → **设置** → 填入 Key → 保存，效果相同。
+登录后访问：
 
----
+- `/`：英语精读工作台
+- `/media`：音频资料库与手机播放器
+- `/login`：登录或首次创建管理员
 
-## 常见问题
+## Linux 服务器一键部署（推荐）
 
-**Q：提示「Python not found」？**
-到 [python.org](https://www.python.org/downloads/) 下载安装，安装时务必勾选「Add Python to PATH」，然后重新打开 CMD。
+适用于 Debian、Ubuntu 及其常见云服务器。部署前只需：
 
-**Q：端口 8010 已被占用？**
-在 CMD 里先设置 PORT 变量再启动：
-```cmd
-set PORT=8020 && start.bat
-```
+1. 准备一个域名，并将域名的 A/AAAA 记录解析到服务器。
+2. 在云平台安全组或防火墙中开放 TCP `80` 和 `443`。
+3. 确保当前账号可以使用 `sudo`。
 
-**Q：浏览器没有自动打开？**
-手动访问 `http://127.0.0.1:8010`。
+### 第一次安装
 
-**Q：依赖安装很慢或失败？**
-可以先换国内镜像源：
-```cmd
-pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
-```
-然后重新运行 `start.bat`。
-
-**Q：如何完全重装？**
-删除 `.venv` 文件夹，再运行 `start.bat`，会重新创建虚拟环境并安装依赖。
-
----
-
-## Mac / Linux
+下载项目：
 
 ```bash
 git clone https://github.com/guai6mmt/ai-english-intensive-reading-lab.git
 cd ai-english-intensive-reading-lab
-cp .env.example .env && nano .env   # 填入 API Key
+```
+
+执行唯一一条配置命令，把域名替换成你自己的域名：
+
+```bash
+sudo env DOMAIN=english.example.com bash scripts/server_install_or_update.sh
+```
+
+脚本会自动完成：
+
+1. 安装 Python、FFmpeg、SQLite，并通过 [Caddy 官方软件源](https://caddyserver.com/docs/install#debian-ubuntu-raspbian)安装 Caddy；
+2. 创建虚拟环境并安装项目依赖；
+3. 创建 `/srv/english-lab` 下的数据、媒体和待导入目录；
+4. 生成 `.env` 并自动写入安全的服务器配置；
+5. 创建并启动 systemd 服务；
+6. 配置 Caddy HTTPS、压缩和安全响应头；
+7. 执行健康检查并显示最终访问地址。
+
+安装完成后打开 `https://你的域名`，按照页面提示创建管理员账号。整个服务器部署过程不需要手工编辑 `.env`、Caddyfile 或 systemd 文件。
+
+> Caddy 需要域名已经正确解析，才能自动申请 HTTPS 证书。DNS 刚修改时可能需要等待解析生效。
+
+### 没有域名，仅在服务器本机使用
+
+```bash
+sudo bash scripts/server_install_or_update.sh
+```
+
+此时应用仅监听 `http://127.0.0.1:8010`，不会直接暴露到公网。以后有域名时，用带 `DOMAIN` 的命令重新运行即可补齐 HTTPS 配置。
+
+### 一键更新
+
+```bash
+cd ai-english-intensive-reading-lab
+bash scripts/server_safe_update.sh
+```
+
+更新脚本会拉取 `main` 最新代码、安装新增依赖、检查代码、备份实际数据目录、受控重启并验证健康状态。数据库备份保存在项目的 `backups/` 目录，默认保留最近 5 份。
+
+### 常用运维命令
+
+```bash
+# 查看状态
+sudo systemctl status ai-english-lab
+
+# 查看实时日志
+sudo journalctl -u ai-english-lab -f
+
+# 重启服务
+sudo systemctl restart ai-english-lab
+```
+
+更详细的公网部署与备份说明见 [deploy/README.md](deploy/README.md)。
+
+## Windows 一键启动
+
+### 第一次使用
+
+```cmd
+git clone https://github.com/guai6mmt/ai-english-intensive-reading-lab.git
+cd ai-english-intensive-reading-lab
+start.bat
+```
+
+也可以直接双击 `start.bat`。脚本会检查 Python、创建 `.venv`、安装依赖、启动服务并打开浏览器：
+
+```text
+http://127.0.0.1:8010
+```
+
+第一次打开时创建管理员账号，密码至少 10 个字符。按 `Ctrl+C` 停止服务，以后仍然运行 `start.bat` 即可。
+
+系统要求：Windows 10/11、Python 3.10 或更高版本、Git。安装 Python 时需要勾选 **Add Python to PATH**。
+
+## macOS / Linux 本地启动
+
+```bash
+git clone https://github.com/guai6mmt/ai-english-intensive-reading-lab.git
+cd ai-english-intensive-reading-lab
 bash scripts/mac_start.sh
 ```
 
 打开 `http://127.0.0.1:8010`。
 
-第一次打开时创建管理员账号。密码至少 10 个字符。
+## 导入音频
 
----
+登录后进入“音频库”，可以使用两种方式：
 
-## 服务器部署（Linux）
+### 浏览器选择文件夹
 
-首次部署：
+点击“上传文件夹”，选择电脑中的音频目录。浏览器会保留相对目录信息，前端自动分片上传，适合从电脑直接整理资料。
 
-```bash
-git clone https://github.com/guai6mmt/ai-english-intensive-reading-lab.git /opt/ai-english-intensive-reading-lab
-cd /opt/ai-english-intensive-reading-lab
-bash scripts/server_install_or_update.sh
+### 扫描服务器目录
+
+先通过 SFTP、SCP 或同步工具把音频放入：
+
+```text
+/srv/english-lab/import
 ```
 
-服务只监听 `127.0.0.1:8010`，不能直接暴露到公网。请按照 [deploy/README.md](deploy/README.md) 配置 Caddy/Nginx 和 HTTPS，并在 `.env` 中设置：
+然后在音频库中执行“扫描服务器目录”。系统只允许扫描已配置的导入根目录，导入后的文件会复制到受管理的媒体目录。原始导入文件不会自动删除。
+
+## AI 模型配置（可选）
+
+音频资料库本身不需要 AI Key。需要长难句分析、写作反馈、ASR 或 TTS 时，在网页右上角进入“设置”，填写相应服务的 Key 即可。
+
+也可以编辑项目根目录的 `.env`：
 
 ```env
-COOKIE_SECURE=true
-MEDIA_STORAGE_ROOT=/srv/english-lab/media
-MEDIA_IMPORT_ROOT=/srv/english-lab/import
+DEEPSEEK_API_KEY=你的 DeepSeek API Key
+QWEN_API_KEY=你的 Qwen / DashScope API Key
+DASHSCOPE_API_KEY=你的 DashScope API Key
+MINIMAX_API_KEY=你的 MiniMax API Key
 ```
 
-后续安全更新（会执行一次短暂重启）：
+完整配置示例见 [.env.example](.env.example)。修改服务器 `.env` 后执行：
 
 ```bash
-cd /opt/ai-english-intensive-reading-lab
-bash scripts/server_safe_update.sh
+sudo systemctl restart ai-english-lab
 ```
 
-或从本地一键推送并重启远端：
+## 一键部署的可选参数
+
+默认配置已经适合个人服务器。如需调整，可在安装命令前传入：
+
+| 参数 | 默认值 | 用途 |
+|---|---|---|
+| `DOMAIN` | 空 | 公网域名；设置后自动安装 Caddy 并启用 HTTPS |
+| `PORT` | `8010` | 应用本机监听端口 |
+| `SERVICE_NAME` | `ai-english-lab` | systemd 服务名称 |
+| `APP_USER` | 执行 sudo 的普通用户 | 服务运行用户 |
+| `ENGLISH_LAB_DATA_DIR` | `/srv/english-lab/data` | 数据库和应用数据目录 |
+| `MEDIA_STORAGE_ROOT` | `/srv/english-lab/media` | 受管理音频存储目录 |
+| `MEDIA_IMPORT_ROOT` | `/srv/english-lab/import` | 允许服务器扫描的导入目录 |
+
+例如，修改端口和媒体磁盘位置：
 
 ```bash
-bash scripts/deploy_safe.sh ubuntu@服务器IP "本次修改说明"
+sudo env DOMAIN=english.example.com PORT=8020 MEDIA_STORAGE_ROOT=/mnt/audio/library bash scripts/server_install_or_update.sh
 ```
 
-> 首次使用 `server_safe_update.sh` 前，需先手动 `git pull origin main` 把脚本拉到服务器。
-> 从旧版本首次升级到音频库版本时，请重新运行一次 `server_install_or_update.sh`，以应用新的 systemd 用户和监听地址。
+## 数据与备份
 
----
+服务器一键部署默认使用：
 
-## 数据文件
-
-所有数据在 `data/` 目录，不会上传到 GitHub：
-
-```
-data/
-├── library.json      # 文章库
-├── vocabulary.json   # 生词本
-├── outputs.json      # AI 反馈
-├── progress.json     # 学习进度
-├── settings.json     # 网页保存的模型设置
-├── uploads/          # 上传的原始文章
-├── app.db            # 用户、会话、音频库和播放进度
-└── media/            # 受管理的音频文件
+```text
+/srv/english-lab/
+├── data/       # SQLite 数据库及应用数据
+├── media/      # 已纳入管理的音频文件
+└── import/     # 等待网页扫描的音频文件
 ```
 
----
+本地运行默认使用项目的 `data/` 目录。运行数据、媒体、`.env` 和备份均被 `.gitignore` 排除，不会提交到 GitHub。
+
+更新脚本会备份数据库和小型应用数据，但不会重复打包通常较大的媒体目录。请另外对 `/srv/english-lab/media` 做定期增量或异地备份。
 
 ## 项目结构
 
-```
+```text
 ai-english-intensive-reading-lab/
-├── start.bat                       # Windows 一键启动（双击或 CMD 运行）
-├── app.py                          # FastAPI 后端
-├── V6_english_analyzer.py          # 难度 / 词频分析
-├── requirements.txt
-├── requirements-dev.txt
-├── english_lab/                    # 登录、数据库、健康检查和媒体库模块
-├── tests/                          # API 与流媒体集成测试
-├── deploy/                         # HTTPS 反向代理示例
-├── .env.example
+├── app.py                          # FastAPI 主应用
+├── english_lab/                    # 登录、数据库、健康检查、音频库 API
+├── static/                         # 精读页面、音频管理页、手机播放器和 PWA
+├── tests/                          # API、认证、上传和流媒体集成测试
+├── deploy/                         # 公网部署说明及 Caddy 示例
 ├── scripts/
-│   ├── win_start.bat               # 同 start.bat（scripts 内的备用版本）
-│   ├── win_start.ps1               # PowerShell 版启动
-│   ├── mac_start.sh                # Mac / Linux 本地启动
-│   ├── server_install_or_update.sh # 服务器首次部署（systemd）
-│   ├── server_safe_update.sh       # 服务器备份、校验和安全更新
-│   └── deploy_safe.sh              # 本地校验 + 远程安全重启
-├── static/
-│   ├── index.html
-│   ├── app.js
-│   ├── media.html / media.js       # 音频管理与手机播放器
-│   ├── auth.js / login.html        # 会话登录
-│   ├── manifest.webmanifest        # PWA
-│   └── styles.css
-└── data/                           # 运行数据（gitignore）
+│   ├── server_install_or_update.sh # Linux 服务器一键安装与配置
+│   ├── server_safe_update.sh       # 备份、拉取、校验、重启和健康检查
+│   ├── deploy_safe.sh              # 从本地校验并触发远程更新
+│   ├── mac_start.sh                # macOS / Linux 本地启动
+│   └── win_start.ps1               # Windows PowerShell 启动
+├── start.bat                       # Windows 双击启动
+├── .env.example                    # 完整可选配置
+└── requirements.txt                # Python 运行依赖
 ```
+
+## 常见问题
+
+**网页能打开，但手机不能访问？**
+
+手机不能使用服务器上的 `127.0.0.1` 地址。公网服务器请使用一键部署时填写的 HTTPS 域名，并检查 80/443 端口是否开放。
+
+**HTTPS 证书申请失败？**
+
+确认域名解析到了当前服务器，80/443 没有被其他程序占用，并查看 `sudo journalctl -u caddy -f`。
+
+**服务器目录扫描不到文件？**
+
+文件必须位于 `/srv/english-lab/import` 或自定义的 `MEDIA_IMPORT_ROOT` 中，而且运行服务的用户必须有读取权限。
+
+**Windows 提示 Python not found？**
+
+安装 Python 3.10+，勾选“Add Python to PATH”，重新打开 CMD 后运行 `start.bat`。
+
+**端口 8010 已被占用？**
+
+Windows：
+
+```cmd
+set PORT=8020 && start.bat
+```
+
+服务器：重新执行带 `PORT=8020` 的一键配置命令。

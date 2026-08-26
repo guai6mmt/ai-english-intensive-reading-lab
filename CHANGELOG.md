@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- 重构 README，完整展示精读、音频管理、移动播放、安全及运维能力。
+- 将 Linux 服务器部署整合为一条配置命令，自动安装依赖、生成环境配置、创建数据目录、注册 systemd、配置 Caddy HTTPS 并执行健康检查。
+- 更新脚本现在会读取实际的 `ENGLISH_LAB_DATA_DIR`，正确备份外置数据目录。
+
 ## v0.3-audio-library - 2026-08-26
 
 - 新增管理员首次设置、Argon2 密码哈希、服务器会话和 CSRF 防护。
