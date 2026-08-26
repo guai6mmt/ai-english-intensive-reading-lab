@@ -494,15 +494,21 @@ def _settings_cipher() -> Fernet:
 def load_settings() -> dict[str, Any]:
     settings = load_json(SETTINGS_PATH, {})
     cipher: Fernet | None = None
+    needs_encryption_migration = False
     for key in _SENSITIVE_SETTING_KEYS:
         value = settings.get(key)
-        if not isinstance(value, str) or not value.startswith(_ENCRYPTED_PREFIX):
+        if not isinstance(value, str) or not value:
+            continue
+        if not value.startswith(_ENCRYPTED_PREFIX):
+            needs_encryption_migration = True
             continue
         cipher = cipher or _settings_cipher()
         try:
             settings[key] = cipher.decrypt(value[len(_ENCRYPTED_PREFIX):].encode("ascii")).decode("utf-8")
         except (InvalidToken, ValueError, UnicodeDecodeError):
             settings[key] = ""
+    if needs_encryption_migration:
+        save_settings(settings)
     return settings
 
 

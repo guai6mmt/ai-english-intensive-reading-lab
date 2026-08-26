@@ -42,3 +42,15 @@ def test_sensitive_settings_are_encrypted_at_rest(authenticated_client):
     stored = json.loads(raw)
     assert secret not in raw
     assert stored["deepseek_api_key"].startswith("enc:v1:")
+
+
+def test_existing_plaintext_settings_are_migrated_on_read(authenticated_client):
+    from app import SETTINGS_PATH, load_settings
+
+    plaintext = "legacy-plaintext-api-key"
+    SETTINGS_PATH.write_text(json.dumps({"qwen_api_key": plaintext}), encoding="utf-8")
+    loaded = load_settings()
+    raw = SETTINGS_PATH.read_text(encoding="utf-8")
+    assert loaded["qwen_api_key"] == plaintext
+    assert plaintext not in raw
+    assert json.loads(raw)["qwen_api_key"].startswith("enc:v1:")
