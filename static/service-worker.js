@@ -1,4 +1,4 @@
-const CACHE_NAME = "english-lab-shell-v2";
+const CACHE_NAME = "english-lab-shell-v3";
 const SHELL = [
   "/static/index.html",
   "/static/styles.css",

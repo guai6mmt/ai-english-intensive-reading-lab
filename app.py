@@ -2844,6 +2844,18 @@ def slim_library(library: dict[str, Any]) -> dict[str, Any]:
     """List projection: only the fields the library/sidebar render, with each
     source's article count, section list and cover. Heavy fields (paragraphs,
     cleaned_paragraphs, AI analyses) are dropped — fetched per article on open."""
+    article_ids = [
+        str(article.get("id"))
+        for source in library.get("sources", [])
+        for article in source.get("articles", [])
+        if article.get("id")
+    ]
+    try:
+        media_links = linked_media_summaries(article_ids)
+    except Exception:
+        # The JSON library can also be inspected before the server lifespan has
+        # initialized SQLite (for example in maintenance scripts).
+        media_links = {}
     sources_out = []
     for source in library.get("sources", []):
         articles = source.get("articles", [])
@@ -2861,7 +2873,10 @@ def slim_library(library: dict[str, Any]) -> dict[str, Any]:
             "article_count": len(articles),
             "sections": sections,
             "cover_url": source_cover_url(source),
-            "articles": [slim_article(a) for a in articles],
+            "articles": [
+                {**slim_article(article), "linked_media": media_links.get(str(article.get("id")))}
+                for article in articles
+            ],
         })
     return {"sources": sources_out}
 
@@ -2999,6 +3014,7 @@ def get_article(article_id: str) -> dict[str, Any]:
     })
     progress[article_id]["updated_at"] = now_iso()
     save_json(PROGRESS_PATH, progress)
+    article["linked_media"] = linked_media_for_article(article_id)
     return {"article": article}
 
 
@@ -4658,6 +4674,7 @@ def delete_source(source_id: str) -> dict[str, Any]:
             safe_unlink(COVERS_DIR / cover_file)
         library["sources"] = [s for s in sources if s["id"] != source_id]
     mutate_library(apply)
+    remove_source_links(source_id)
     lib = load_json(LIBRARY_PATH, {"sources": []})
     return {"library": slim_library(lib), "summary": library_summary(lib)}
 
@@ -4671,11 +4688,18 @@ VIDEO_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 from english_lab.auth import SessionAuthMiddleware, router as auth_router  # noqa: E402
 from english_lab.health import router as health_router  # noqa: E402
 from english_lab.media import router as media_router  # noqa: E402
+from english_lab.content_links import (  # noqa: E402
+    linked_media_for_article,
+    linked_media_summaries,
+    remove_source_links,
+    router as content_links_router,
+)
 from english_lab.webdav import router as webdav_api_router, webdav_routes  # noqa: E402
 
 app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(media_router)
+app.include_router(content_links_router)
 app.include_router(webdav_api_router)
 app.router.routes.extend(webdav_routes)
 app.add_middleware(SessionAuthMiddleware)

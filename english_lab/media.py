@@ -29,6 +29,7 @@ SUPPORTED_AUDIO_EXTENSIONS = {
     ".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus", ".m4b",
 }
 SORT_COLUMNS = {
+    "track": "CASE WHEN media_items.title GLOB '[0-9]*' THEN CAST(media_items.title AS INTEGER) ELSE 2147483647 END ASC, media_items.title COLLATE NOCASE ASC",
     "created": "media_items.created_at DESC",
     "title": "media_items.title COLLATE NOCASE ASC",
     "duration": "COALESCE(media_items.duration_ms, 0) DESC",
@@ -311,12 +312,15 @@ def _job_payload(job_id: str, user_id: str) -> dict[str, Any]:
 def _media_query(where: str, params: list[Any], order: str, limit: int, offset: int) -> tuple[str, list[Any]]:
     sql = f"""
         SELECT media_items.*, collections.name AS collection_name,
+               article_media_links.article_id AS linked_article_id,
+               article_media_links.article_source_id AS linked_source_id,
                CASE WHEN favorites.media_id IS NULL THEN 0 ELSE 1 END AS favorite,
                COALESCE(play_progress.position_ms, 0) AS position_ms,
                COALESCE(play_progress.playback_rate, 1.0) AS playback_rate,
                COALESCE(play_progress.completed, 0) AS completed
         FROM media_items
         LEFT JOIN collections ON collections.id = media_items.collection_id
+        LEFT JOIN article_media_links ON article_media_links.media_id = media_items.id
         LEFT JOIN favorites ON favorites.media_id = media_items.id AND favorites.user_id = ?
         LEFT JOIN play_progress ON play_progress.media_id = media_items.id AND play_progress.user_id = ?
         WHERE {where}
@@ -366,7 +370,7 @@ def list_media(
     collection_id: str | None = None,
     favorite: bool = False,
     deleted: bool = False,
-    sort: str = "created",
+    sort: str = "track",
     limit: int = Query(default=200, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:

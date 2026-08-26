@@ -10,13 +10,15 @@ const state = {
   favoriteOnly: false,
   deleted: false,
   query: "",
-  sort: "created",
+  sort: "track",
   saveTimer: null,
   lastProgressSave: 0,
   total: 0,
   loopA: null,
   loopB: null,
   restoredPlayback: false,
+  deepLinkRestored: false,
+  pairing: { options: null, candidates: [], media: [], original: new Map() },
 };
 
 const PLAYBACK_KEY = "el_media_playback_v1";
@@ -59,6 +61,14 @@ function formatTime(seconds) {
   return h ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
 }
 
+function friendlyCollectionName(collection) {
+  const name = String(collection?.name || "未命名集合");
+  const date = name.match(/20\d{2}[-_. ](?:0[1-9]|1[0-2])[-_. ](?:[0-2]\d|3[01])/)?.[0]?.replace(/[_. ]/g, "-");
+  if (/economist/i.test(name) && date) return `The Economist · ${date}`;
+  const parts = name.split(/[\\/]/).filter(Boolean);
+  return parts.at(-1) || name;
+}
+
 function showNotice(message, error = false) {
   const box = $("notice");
   box.hidden = !message;
@@ -85,6 +95,15 @@ async function loadData(append = false) {
     renderItems();
     renderStats(status, library.total || 0);
     restorePlayback();
+    const requestedMedia = new URLSearchParams(location.search).get("media");
+    if (requestedMedia && !state.deepLinkRestored) {
+      state.deepLinkRestored = true;
+      const requested = state.items.find((item) => item.id === requestedMedia);
+      if (requested) {
+        await playItem(requested.id, false);
+        document.querySelector(`[data-id="${CSS.escape(requested.id)}"]`)?.scrollIntoView({ block: "center" });
+      }
+    }
   } catch (error) {
     showNotice(error.message, true);
   }
@@ -103,7 +122,7 @@ function renderStats(status, visible) {
 function renderCollections() {
   $("collectionList").innerHTML = state.collections.map((collection) => `
     <button class="collection${state.collectionId === collection.id ? " active" : ""}" data-collection="${esc(collection.id)}">
-      <span>${esc(collection.name)}</span><b>${collection.item_count}</b>
+      <span title="${esc(collection.name)}">${esc(friendlyCollectionName(collection))}</span><b>${collection.item_count}</b>
     </button>`).join("");
   document.querySelectorAll(".collection[data-special], .collection[data-collection='']").forEach((button) => {
     const special = button.dataset.special || "";
@@ -120,11 +139,11 @@ function renderItems() {
     return `<article class="media-row" data-id="${esc(item.id)}" data-playing="${state.current?.id === item.id && !audio.paused}">
       <button class="track-icon" data-play="${esc(item.id)}" aria-label="播放">${state.current?.id === item.id && !audio.paused ? ICONS.pause : ICONS.play}</button>
       <div class="track-main" data-play="${esc(item.id)}"><strong>${esc(item.title)}</strong><small>${esc(item.collection_name || item.relative_path || item.original_name)}${progress ? ` · 已听 ${progress}%` : ""}</small></div>
-      <div class="track-tags">${item.difficulty ? `<span>${esc(item.difficulty)}</span>` : ""}${tags}</div>
+      <div class="track-tags">${item.linked_article_id ? `<a class="linked-article" href="/?article=${encodeURIComponent(item.linked_article_id)}">配套文章</a>` : ""}${item.difficulty ? `<span>${esc(item.difficulty)}</span>` : ""}${tags}</div>
       <div class="track-meta">${duration} · ${formatBytes(item.file_size)}</div>
       <div class="row-actions">
-        <button data-favorite="${esc(item.id)}" title="收藏" class="${item.favorite ? "is-favorite" : ""}">${ICONS.star}</button>
-        ${state.deleted ? `<button data-restore="${esc(item.id)}" title="恢复">恢复</button>` : `<button data-edit="${esc(item.id)}" title="编辑">${ICONS.more}</button><button data-delete="${esc(item.id)}" title="移入回收站">${ICONS.trash}</button>`}
+        <button data-favorite="${esc(item.id)}" title="收藏" aria-label="收藏音频" class="${item.favorite ? "is-favorite" : ""}">${ICONS.star}</button>
+        ${state.deleted ? `<button data-restore="${esc(item.id)}" title="恢复">恢复</button>` : `<button data-edit="${esc(item.id)}" title="编辑" aria-label="编辑音频">${ICONS.more}</button><button data-delete="${esc(item.id)}" title="移入回收站" aria-label="移入回收站">${ICONS.trash}</button>`}
       </div>
     </article>`;
   }).join("");
@@ -350,10 +369,148 @@ function openEdit(id) {
   $("editDialog").showModal();
 }
 
+function pairStatus(candidate) {
+  if (candidate.status === "confirmed") return ["已确认", "confirmed"];
+  if (!candidate.media_id) return ["待手动匹配", "unmatched"];
+  if (candidate.match_method === "manual") return ["人工选择", "manual"];
+  if (candidate.status === "review") return ["建议复核", "review"];
+  return ["自动匹配", "matched"];
+}
+
+function updatePairFooter() {
+  const chosen = state.pairing.candidates.filter((item) => item.media_id).length;
+  const total = state.pairing.candidates.length;
+  const duplicates = total - new Set(state.pairing.candidates.filter((item) => item.media_id).map((item) => item.media_id)).size - state.pairing.candidates.filter((item) => !item.media_id).length;
+  $("pairFooterText").textContent = duplicates > 0
+    ? `存在 ${duplicates} 条重复音频，请重新选择。`
+    : `已选择 ${chosen}/${total} 组；未选择的文章会保持未配套状态。`;
+  $("confirmPairBtn").disabled = !total || duplicates > 0 || chosen === 0;
+}
+
+function renderPairing() {
+  const options = state.pairing.media;
+  const optionHtml = options.map((item) => `<option value="${esc(item.id)}">${esc(item.title)}</option>`).join("");
+  $("pairTable").innerHTML = state.pairing.candidates.map((candidate) => {
+    const [label, status] = pairStatus(candidate);
+    return `<div class="pair-row" data-pair-row="${esc(candidate.article_id)}" data-status="${status}">
+      <div class="pair-article"><small>${esc(candidate.section)}</small><strong>${esc(candidate.article_title)}</strong><span>${esc(candidate.reason || "")}</span></div>
+      <div class="pair-arrow" aria-hidden="true">→</div>
+      <div class="pair-audio">
+        <select data-pair-select="${esc(candidate.article_id)}" aria-label="为 ${esc(candidate.article_title)} 选择音频">
+          <option value="">— 暂不配套 —</option>${optionHtml}
+        </select>
+        <button class="quiet" data-pair-preview="${esc(candidate.article_id)}" ${candidate.media_id ? "" : "disabled"}>试听</button>
+      </div>
+      <span class="pair-status ${status}">${label}${candidate.media_id ? ` · ${Math.round(Number(candidate.confidence || 0) * 100)}%` : ""}</span>
+    </div>`;
+  }).join("") || `<div class="empty"><h2>没有可配套的文章</h2></div>`;
+  state.pairing.candidates.forEach((candidate) => {
+    const select = document.querySelector(`[data-pair-select="${CSS.escape(candidate.article_id)}"]`);
+    if (select) select.value = candidate.media_id || "";
+  });
+  updatePairFooter();
+}
+
+async function openPairing() {
+  $("pairDialog").showModal();
+  $("pairTable").innerHTML = `<div class="loading-state">正在读取文章和音频集合…</div>`;
+  $("pairSummary").hidden = true;
+  $("confirmPairBtn").disabled = true;
+  try {
+    const options = await api("/api/v1/content-links/options");
+    state.pairing.options = options;
+    $("pairSourceSelect").innerHTML = (options.sources || []).map((item) => `<option value="${esc(item.id)}">${esc(item.filename)} · ${item.article_count} 篇</option>`).join("");
+    $("pairCollectionSelect").innerHTML = (options.collections || []).map((item) => `<option value="${esc(item.id)}">${esc(friendlyCollectionName(item))} · ${item.item_count} 条</option>`).join("");
+    if (!options.sources?.length || !options.collections?.length) {
+      $("pairTable").innerHTML = `<div class="empty"><h2>资料还不完整</h2><p>请先导入文章文件和音频文件夹。</p></div>`;
+      return;
+    }
+    const source = options.sources[0];
+    if (source.suggested_collection_id) $("pairCollectionSelect").value = source.suggested_collection_id;
+    await previewPairing();
+  } catch (error) {
+    $("pairTable").innerHTML = "";
+    $("pairNotice").hidden = false;
+    $("pairNotice").textContent = error.message;
+    $("pairNotice").classList.add("is-error");
+  }
+}
+
+async function previewPairing() {
+  const sourceId = $("pairSourceSelect").value;
+  const collectionId = $("pairCollectionSelect").value;
+  if (!sourceId || !collectionId) return;
+  $("previewPairBtn").disabled = true;
+  $("previewPairBtn").textContent = "匹配中…";
+  $("pairNotice").hidden = true;
+  try {
+    const data = await api("/api/v1/content-links/preview", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_id: sourceId, collection_id: collectionId }),
+    });
+    state.pairing.candidates = data.candidates || [];
+    state.pairing.media = data.media_options || [];
+    state.pairing.original = new Map(state.pairing.candidates.map((item) => [item.article_id, item.media_id || ""]));
+    const summary = data.summary || {};
+    $("pairSummary").hidden = false;
+    $("pairSummary").innerHTML = `<div><b>${summary.articles || 0}</b><span>文章</span></div><div><b>${summary.audio || 0}</b><span>音频</span></div><div><b>${summary.matched || 0}</b><span>已匹配</span></div><div><b>${summary.review || 0}</b><span>建议复核</span></div><div><b>${summary.unmatched || 0}</b><span>待手动</span></div>`;
+    renderPairing();
+  } catch (error) {
+    $("pairNotice").hidden = false;
+    $("pairNotice").textContent = error.message;
+    $("pairNotice").classList.add("is-error");
+  } finally {
+    $("previewPairBtn").disabled = false;
+    $("previewPairBtn").textContent = "自动匹配";
+  }
+}
+
+async function confirmPairing() {
+  const links = state.pairing.candidates.filter((item) => item.media_id).map((item) => ({
+    article_id: item.article_id,
+    media_id: item.media_id,
+    match_method: item.match_method === "manual" ? "manual" : "automatic",
+    confidence: item.match_method === "manual" ? 1 : Number(item.confidence || 0),
+  }));
+  $("confirmPairBtn").disabled = true;
+  $("confirmPairBtn").textContent = "保存中…";
+  try {
+    const data = await api("/api/v1/content-links/confirm", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_id: $("pairSourceSelect").value, collection_id: $("pairCollectionSelect").value, links }),
+    });
+    state.pairing.candidates = data.candidates || [];
+    state.pairing.original = new Map(state.pairing.candidates.map((item) => [item.article_id, item.media_id || ""]));
+    renderPairing();
+    $("pairNotice").hidden = false;
+    $("pairNotice").classList.remove("is-error");
+    $("pairNotice").textContent = data.message || "配套关系已经保存。";
+    await loadData();
+  } catch (error) {
+    $("pairNotice").hidden = false;
+    $("pairNotice").classList.add("is-error");
+    $("pairNotice").textContent = error.message;
+  } finally {
+    $("confirmPairBtn").textContent = "确认并保存配套";
+    updatePairFooter();
+  }
+}
+
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("button, [data-play]");
   if (!button) return;
   try {
+    if (button.dataset.pairPreview) {
+      const candidate = state.pairing.candidates.find((item) => item.article_id === button.dataset.pairPreview);
+      const item = state.pairing.media.find((media) => media.id === candidate?.media_id);
+      if (item) {
+        $("pairPreviewTitle").textContent = item.title;
+        $("pairPreviewAudio").src = item.stream_url;
+        $("pairPreviewPlayer").hidden = false;
+        await $("pairPreviewAudio").play().catch(() => {});
+      }
+      return;
+    }
     if (button.dataset.play) return playItem(button.dataset.play);
     if (button.classList.contains("collection")) return selectCollection(button);
     if (button.dataset.favorite) return toggleFavorite(button.dataset.favorite);
@@ -367,6 +524,33 @@ document.addEventListener("click", async (event) => {
 });
 
 $("importBtn").addEventListener("click", () => $("importDialog").showModal());
+$("pairBtn").addEventListener("click", () => openPairing());
+$("closePairBtn").addEventListener("click", () => {
+  $("pairPreviewAudio").pause();
+  $("pairDialog").close();
+});
+$("previewPairBtn").addEventListener("click", () => previewPairing());
+$("confirmPairBtn").addEventListener("click", () => confirmPairing());
+$("pairSourceSelect").addEventListener("change", () => {
+  const source = state.pairing.options?.sources?.find((item) => item.id === $("pairSourceSelect").value);
+  if (source?.suggested_collection_id) $("pairCollectionSelect").value = source.suggested_collection_id;
+});
+$("pairTable").addEventListener("change", (event) => {
+  const select = event.target.closest("[data-pair-select]");
+  if (!select) return;
+  const candidate = state.pairing.candidates.find((item) => item.article_id === select.dataset.pairSelect);
+  if (!candidate) return;
+  candidate.media_id = select.value || null;
+  candidate.media_title = state.pairing.media.find((item) => item.id === select.value)?.title || null;
+  const original = state.pairing.original.get(candidate.article_id) || "";
+  if ((select.value || "") !== original) {
+    candidate.match_method = select.value ? "manual" : "unmatched";
+    candidate.confidence = select.value ? 1 : 0;
+    candidate.status = select.value ? "review" : "unmatched";
+    candidate.reason = select.value ? "由管理员手动选择" : "暂不配套";
+  }
+  renderPairing();
+});
 $("scanBtn").addEventListener("click", () => $("scanDialog").showModal());
 $("refreshBtn").addEventListener("click", () => loadData());
 $("loadMoreBtn").addEventListener("click", () => loadData(true));

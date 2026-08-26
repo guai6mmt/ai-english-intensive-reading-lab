@@ -12,7 +12,7 @@
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
     <link rel="stylesheet" href="/static/tokens.css?v=20260826" />
     <link rel="stylesheet" href="/static/components.css?v=20260826" />
-    <link rel="stylesheet" href="/static/media.css?v=20260826" />
+    <link rel="stylesheet" href="/static/media.css?v=20260827" />
     <script src="/static/theme.js?v=20260826"></script>
     <script src="/static/auth.js"></script>
   </head>
@@ -28,9 +28,9 @@
       </nav>
       <header class="topbar">
         <a class="brand" href="/"><span class="brand-mark">EL</span><span><strong>English Lab</strong><small>私人听力资料库</small></span></a>
-        <nav><a href="/">文章库</a><a class="active" href="/media">音频库</a></nav>
         <div class="top-actions">
           <button class="quiet" id="scanBtn">扫描服务器</button>
+          <button class="quiet pair-action" id="pairBtn">内容配套</button>
           <button class="primary" id="importBtn">＋ 导入文件夹</button>
           <button class="avatar" id="mediaThemeBtn" title="切换主题" aria-label="切换主题"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg></button>
           <button class="avatar" id="userBtn" title="退出登录">管</button>
@@ -56,6 +56,7 @@
             <div class="library-controls">
               <label class="search"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="searchInput" placeholder="搜索标题、文件夹或标签…" /></label>
               <select id="sortSelect" aria-label="排序">
+                <option value="track" selected>曲目顺序</option>
                 <option value="created">最近导入</option>
                 <option value="title">标题</option>
                 <option value="duration">时长</option>
@@ -116,6 +117,32 @@
       </form>
     </dialog>
 
-    <script src="/static/media.js?v=20260826"></script>
+    <dialog id="pairDialog" class="pair-dialog">
+      <div class="dialog-card pair-card">
+        <div class="dialog-head">
+          <div><p class="eyebrow">CONTENT PAIRING</p><h2>文章与音频配套</h2></div>
+          <button class="icon-close" id="closePairBtn" aria-label="关闭配套管理">×</button>
+        </div>
+        <p>系统先按期刊日期、栏目和栏目内顺序自动匹配。橙色或未匹配项目可以在下拉框中手动选择音频，再统一确认保存。</p>
+        <div class="pair-selectors">
+          <label>文章来源<select id="pairSourceSelect"></select></label>
+          <label>音频集合<select id="pairCollectionSelect"></select></label>
+          <button class="primary" id="previewPairBtn">自动匹配</button>
+        </div>
+        <div class="pair-summary" id="pairSummary" hidden></div>
+        <div class="pair-notice notice" id="pairNotice" hidden></div>
+        <div class="pair-table" id="pairTable"></div>
+        <div class="pair-preview-player" id="pairPreviewPlayer" hidden>
+          <span id="pairPreviewTitle">音频预览</span>
+          <audio id="pairPreviewAudio" controls preload="metadata"></audio>
+        </div>
+        <div class="dialog-actions pair-footer">
+          <span class="muted" id="pairFooterText">选择两份资料后开始自动匹配。</span>
+          <button class="primary" id="confirmPairBtn" disabled>确认并保存配套</button>
+        </div>
+      </div>
+    </dialog>
+
+    <script src="/static/media.js?v=20260827"></script>
   </body>
 </html>

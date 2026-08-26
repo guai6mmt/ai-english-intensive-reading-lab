@@ -182,6 +182,7 @@ body { font-feature-settings: "ss01", "cv11"; }
 .art-dot.done { background: var(--good); }
 .art-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .art-meta { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; font-family: var(--mono); }
+.linked-media-mark { color:var(--accent-ink); background:var(--accent-soft); border-radius:var(--radius-pill); padding:2px 6px; font-size:10px; white-space:nowrap; }
 
 .side-foot {
   position: relative;
@@ -1501,6 +1502,13 @@ dialog::backdrop { background: rgba(15, 18, 22, 0.5); }
   margin-bottom: 12px;
 }
 
+.article-audio-dock { position:fixed; z-index:70; left:calc(var(--rail-w) + 18px); right:18px; bottom:18px; display:grid; grid-template-columns:minmax(180px,1fr) minmax(320px,2fr) auto auto; align-items:center; gap:14px; padding:12px 14px; border:1px solid var(--dock-line); border-radius:var(--radius-lg); background:var(--dock); color:var(--dock-ink); box-shadow:var(--shadow-dock); }
+.article-audio-dock[hidden] { display:none; }
+.article-audio-dock strong,.article-audio-dock small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.article-audio-dock small { margin-top:4px; color:var(--dock-muted); font:10px var(--mono); }
+.article-audio-dock audio { width:100%; height:38px; }
+.article-audio-dock .btn { color:var(--dock-ink); border-color:var(--dock-line); text-decoration:none; }
+
 /* responsive */
 @media (max-width: 1180px) {
   .work { grid-template-columns: minmax(0, 1fr); }
@@ -1524,6 +1532,10 @@ dialog::backdrop { background: rgba(15, 18, 22, 0.5); }
   .work-main { padding: 16px; }
   .lib { padding: 16px; }
   .lib-h { grid-template-columns: 1fr; }
+  .article-audio-dock { left:8px; right:8px; bottom:72px; grid-template-columns:minmax(0,1fr) auto; gap:8px; padding:10px; }
+  .article-audio-dock>div { grid-column:1; }
+  .article-audio-dock audio { grid-column:1 / -1; grid-row:2; }
+  .article-audio-dock #articleAudioLibraryLink { display:none; }
 }
 
 /* Settings · remote phone access */

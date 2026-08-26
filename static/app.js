@@ -40,6 +40,7 @@ const state = {
   expandedSources: new Set(),
   collapsedSections: new Set(),
   libBook: null,
+  deepLinkOpened: false,
 };
 
 // ───────── Utilities ─────────
@@ -248,6 +249,11 @@ async function refreshAll() {
   }
   renderSidebar();
   renderLibraryView();
+  const requestedArticle = new URLSearchParams(location.search).get("article");
+  if (requestedArticle && !state.deepLinkOpened && allArticles().some((item) => item.id === requestedArticle)) {
+    state.deepLinkOpened = true;
+    await openArticle(requestedArticle);
+  }
   // Phase 2 — secondary data loads in the background; patch counts/dots/meta later.
   loadSecondaryData();
 }
@@ -355,7 +361,7 @@ function renderSidebar() {
             <div class="art-title">${escapeHtml(article.title)}</div>
             <div class="art-meta">${escapeHtml(diff)} · ${formatNumber(words)} w · ${escapeHtml(updated)}</div>
           </div>
-          ${article.favorite ? `<span class="art-meta" title="已收藏">已收藏</span>` : ""}
+          ${article.linked_media ? `<span class="art-meta linked-media-mark" title="已有配套原版音频">音频</span>` : article.favorite ? `<span class="art-meta" title="已收藏">已收藏</span>` : ""}
         </div>`;
       }).join("");
 
@@ -443,6 +449,7 @@ function articleCardHtml(a) {
       <span>${formatNumber(words)} w</span>
       <span>·</span>
       <span>${minutes} min</span>
+      ${a.linked_media ? `<span class="linked-media-mark">原版音频</span>` : ""}
       <span style="flex: 1;"></span>
       <span>${Math.round(pct * 100)}%</span>
     </div>
@@ -540,6 +547,7 @@ async function openArticle(articleId) {
   try {
     const data = await api(`/api/articles/${articleId}`);
     state.currentArticle = data.article;
+    $("appShell").dataset.mobileSide = "closed";
     // Auto-expand this article's book in the sidebar so it stays visible.
     if (state.currentArticle?.source_id) {
       state.expandedSources.add(state.currentArticle.source_id);
@@ -576,6 +584,7 @@ function showStudyView() {
   $("favoriteBtn").hidden = false;
   $("batchAnalyzeBtn").hidden = false;
   $("listenModeBtn").hidden = false;
+  $("originalAudioBtn").hidden = !state.currentArticle?.linked_media;
   $("toggleRailBtn").hidden = false;
   applyTweaks();
 }
@@ -588,6 +597,7 @@ function showLibraryView() {
   $("favoriteBtn").hidden = true;
   $("batchAnalyzeBtn").hidden = true;
   $("listenModeBtn").hidden = true;
+  $("originalAudioBtn").hidden = true;
   $("toggleRailBtn").hidden = true;
   $("reopenRailBtn")?.classList.add("hidden");
   renderCrumbs();
@@ -609,7 +619,23 @@ function renderArticleHeader() {
     <span class="tag mono">${formatNumber(words)} w · ${minutes}′</span>
   `;
   $("favoriteBtn").textContent = a.favorite ? "已收藏" : "收藏";
+  $("originalAudioBtn").hidden = !a.linked_media;
   renderCrumbs();
+}
+
+function playOriginalArticleAudio() {
+  const media = state.currentArticle?.linked_media;
+  if (!media) return;
+  const player = $("articleOriginalAudio");
+  if (player.dataset.mediaId !== media.id) {
+    player.src = media.stream_url;
+    player.dataset.mediaId = media.id;
+  }
+  $("articleAudioTitle").textContent = state.currentArticle.title || media.title;
+  $("articleAudioMeta").textContent = `${media.title}${media.duration_ms ? ` · ${Math.round(media.duration_ms / 60000)} 分钟` : ""}`;
+  $("articleAudioLibraryLink").href = `/media?media=${encodeURIComponent(media.id)}`;
+  $("articleAudioDock").hidden = false;
+  player.play().catch(() => {});
 }
 
 function renderCrumbs() {
@@ -1860,6 +1886,11 @@ document.addEventListener("click", async (event) => {
   }
   // Toolbar
   if (target.id === "toggleSideBtn" || target.id === "collapseSideBtn") {
+    if (matchMedia("(max-width: 880px)").matches) {
+      const isOpen = $("appShell").dataset.mobileSide === "open";
+      $("appShell").dataset.mobileSide = target.id === "collapseSideBtn" || isOpen ? "closed" : "open";
+      return;
+    }
     state.ui.showSide = !state.ui.showSide;
     saveTweaks();
     applyTweaks();
@@ -1891,6 +1922,12 @@ document.addEventListener("click", async (event) => {
   if (target.id === "closeSettingsBtn") { $("settingsDialog").close(); return; }
   if (target.id === "saveSettingsBtn") { saveTweaks(); applyTweaks(); $("settingsDialog").close(); return; }
   if (target.id === "audioLibraryBtn") { window.location.href = "/media"; return; }
+  if (target.id === "originalAudioBtn") { playOriginalArticleAudio(); return; }
+  if (target.id === "closeArticleAudioBtn") {
+    $("articleOriginalAudio").pause();
+    $("articleAudioDock").hidden = true;
+    return;
+  }
   if (target.id === "copyDavUrlBtn") {
     try { await copyText($("davUrlInput").value, target); } catch { alert("复制失败，请手动选择地址复制。"); }
     return;

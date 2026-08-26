@@ -10,7 +10,7 @@ from .config import config, ensure_server_dirs
 
 
 BASE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     2: (
@@ -25,6 +25,29 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
                revoked_at TEXT
            )""",
         "CREATE INDEX IF NOT EXISTS idx_app_pw_user ON app_passwords(user_id)",
+    ),
+    3: (
+        """CREATE TABLE IF NOT EXISTS content_bundle_links (
+               id TEXT PRIMARY KEY,
+               article_source_id TEXT NOT NULL UNIQUE,
+               media_collection_id TEXT NOT NULL UNIQUE REFERENCES collections(id) ON DELETE CASCADE,
+               issue_key TEXT NOT NULL DEFAULT '',
+               match_method TEXT NOT NULL DEFAULT 'automatic',
+               confidence REAL NOT NULL DEFAULT 0,
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL
+           )""",
+        """CREATE TABLE IF NOT EXISTS article_media_links (
+               article_id TEXT PRIMARY KEY,
+               article_source_id TEXT NOT NULL,
+               media_id TEXT NOT NULL UNIQUE REFERENCES media_items(id) ON DELETE CASCADE,
+               match_method TEXT NOT NULL DEFAULT 'automatic',
+               confidence REAL NOT NULL DEFAULT 0,
+               confirmed INTEGER NOT NULL DEFAULT 0,
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_article_media_source ON article_media_links(article_source_id)",
     ),
 }
 
