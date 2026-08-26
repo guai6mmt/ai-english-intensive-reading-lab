@@ -17,6 +17,12 @@ BRANCH="${BRANCH:-main}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 SKIP_BACKUP="${SKIP_BACKUP:-0}"
 
+if [ "$(id -u)" -eq 0 ]; then
+  SUDO=""
+else
+  SUDO="sudo"
+fi
+
 cd "$APP_DIR"
 
 # 只读取所需键，不直接 source .env（API Key 或中文占位内容可能含空格）。
@@ -84,8 +90,8 @@ if command -v node >/dev/null 2>&1; then
 fi
 
 echo "==> 6/6 受控重启 systemd 服务"
-sudo systemctl daemon-reload
-sudo systemctl restart "$SERVICE_NAME"
+$SUDO systemctl daemon-reload
+$SUDO systemctl restart "$SERVICE_NAME"
 
 # 等待端口重新可用并做健康检查（最多 20 秒）
 echo "    等待端口 ${PORT} 重新上线 ..."
@@ -99,6 +105,6 @@ for i in $(seq 1 20); do
 done
 
 echo "    ✗ 警告：20s 内端口仍未响应。请检查："
-echo "         sudo systemctl status ${SERVICE_NAME}"
+echo "         ${SUDO:+sudo }systemctl status ${SERVICE_NAME}"
 echo "         journalctl -u ${SERVICE_NAME} -f"
 exit 1

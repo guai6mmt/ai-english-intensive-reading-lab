@@ -4,9 +4,19 @@
 
 ## 一键部署
 
-先把域名解析到服务器并开放 TCP 80/443，然后在项目目录运行：
+先按照主 README 的“Linux 服务器一键部署”章节为私有仓库添加 Deploy Key，并将仓库克隆到 `/opt/ai-english-intensive-reading-lab`。再把域名解析到服务器、开放 TCP 80/443，然后在项目目录运行。
+
+root 用户：
 
 ```bash
+cd /opt/ai-english-intensive-reading-lab
+env DOMAIN=english.example.com bash scripts/server_install_or_update.sh
+```
+
+普通 sudo 用户：
+
+```bash
+cd ai-english-intensive-reading-lab
 sudo env DOMAIN=english.example.com bash scripts/server_install_or_update.sh
 ```
 
@@ -56,7 +66,7 @@ bash scripts/server_safe_update.sh
 用环境变量覆盖默认值后，重新运行安装脚本即可：
 
 ```bash
-sudo env \
+env \
   DOMAIN=english.example.com \
   PORT=8020 \
   APP_USER=englishlab \
@@ -66,26 +76,30 @@ sudo env \
   bash scripts/server_install_or_update.sh
 ```
 
+普通用户在 `env` 前添加 `sudo`。
+
 已有 `.env` 不会被删除，脚本只自动更新数据目录、媒体目录、导入目录、API 文档开关和 Cookie 安全设置。AI 服务 Key 会被保留。
 
 ## 检查与排错
 
+以下命令按 root 用户编写；普通用户需要在命令开头添加 `sudo`。
+
 ```bash
 # 应用状态
-sudo systemctl status ai-english-lab
+systemctl status ai-english-lab
 
 # 应用日志
-sudo journalctl -u ai-english-lab -f
+journalctl -u ai-english-lab -f
 
 # Caddy 状态和证书日志
-sudo systemctl status caddy
-sudo journalctl -u caddy -f
+systemctl status caddy
+journalctl -u caddy -f
 
 # 本机健康检查
 curl -fsS http://127.0.0.1:8010/health/ready
 
 # 验证 Caddy 配置
-sudo caddy validate --config /etc/caddy/Caddyfile
+caddy validate --config /etc/caddy/Caddyfile
 ```
 
 如果证书申请失败，优先检查域名解析、云服务器安全组、主机防火墙以及 80/443 端口占用情况。
@@ -95,10 +109,10 @@ sudo caddy validate --config /etc/caddy/Caddyfile
 停止服务后，将目标备份复制回实际数据目录：
 
 ```bash
-sudo systemctl stop ai-english-lab
-sudo cp backups/app-YYYYMMDD-HHMMSS.db /srv/english-lab/data/app.db
-sudo chown --reference=/srv/english-lab/data /srv/english-lab/data/app.db
-sudo systemctl start ai-english-lab
+systemctl stop ai-english-lab
+cp backups/app-YYYYMMDD-HHMMSS.db /srv/english-lab/data/app.db
+chown --reference=/srv/english-lab/data /srv/english-lab/data/app.db
+systemctl start ai-english-lab
 ```
 
-恢复前建议先复制一份当前数据库。不要在服务运行时直接覆盖 SQLite 文件。
+以上恢复命令按 root 用户编写，普通用户需要添加 `sudo`。恢复前建议先复制一份当前数据库。不要在服务运行时直接覆盖 SQLite 文件。

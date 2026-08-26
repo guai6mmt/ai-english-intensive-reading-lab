@@ -47,6 +47,21 @@ if ! id "$APP_USER" >/dev/null 2>&1; then
 fi
 APP_GROUP="${APP_GROUP:-$(id -gn "$APP_USER")}"
 
+if [ "$(id -un)" = "$APP_USER" ]; then
+  APP_IS_READABLE=1
+elif [ "$(id -u)" -eq 0 ]; then
+  if runuser -u "$APP_USER" -- test -r "$APP_DIR/app.py"; then APP_IS_READABLE=1; else APP_IS_READABLE=0; fi
+elif sudo -u "$APP_USER" test -r "$APP_DIR/app.py"; then
+  APP_IS_READABLE=1
+else
+  APP_IS_READABLE=0
+fi
+if [ "$APP_IS_READABLE" != "1" ]; then
+  echo "错误：运行用户 ${APP_USER} 无法读取项目目录 ${APP_DIR}。" >&2
+  echo "root 用户请把仓库克隆到 /opt/ai-english-intensive-reading-lab，而不是 /root 下。" >&2
+  exit 2
+fi
+
 echo "==> 1/7 安装系统依赖"
 $SUDO apt-get update
 $SUDO apt-get install -y git python3 python3-venv python3-pip ffmpeg sqlite3 curl ca-certificates
@@ -183,8 +198,8 @@ EOF
 else
   echo
   echo "安装完成：应用仅监听 http://127.0.0.1:${PORT}。"
-  echo "公网使用请重新运行：sudo env DOMAIN=你的域名 bash scripts/server_install_or_update.sh"
+  echo "公网使用请重新运行：${SUDO:+sudo }env DOMAIN=你的域名 bash scripts/server_install_or_update.sh"
 fi
 
-echo "服务状态：sudo systemctl status ${SERVICE_NAME}"
-echo "实时日志：sudo journalctl -u ${SERVICE_NAME} -f"
+echo "服务状态：${SUDO:+sudo }systemctl status ${SERVICE_NAME}"
+echo "实时日志：${SUDO:+sudo }journalctl -u ${SERVICE_NAME} -f"

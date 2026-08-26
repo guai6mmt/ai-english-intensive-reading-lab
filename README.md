@@ -63,18 +63,42 @@
 
 1. 准备一个域名，并将域名的 A/AAAA 记录解析到服务器。
 2. 在云平台安全组或防火墙中开放 TCP `80` 和 `443`。
-3. 确保当前账号可以使用 `sudo`。
+3. 使用 `root`，或者确保当前普通账号可以使用 `sudo`。
 
 ### 第一次安装
 
-下载项目：
+本仓库当前为私有仓库。GitHub 已停止支持使用账号登录密码执行 Git 操作，因此服务器需要先进行一次授权。长期部署推荐使用只能读取这一个仓库的 Deploy Key，不要把 GitHub 密码、Token 或私钥写进命令和脚本。[GitHub Deploy Key 官方说明](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
+
+以下命令适用于你当前这种 `root@服务器` 的登录方式。先生成服务器专用密钥：
 
 ```bash
-git clone https://github.com/guai6mmt/ai-english-intensive-reading-lab.git
-cd ai-english-intensive-reading-lab
+install -d -m 700 /root/.ssh
+test -f /root/.ssh/ai_english_deploy || ssh-keygen -t ed25519 -f /root/.ssh/ai_english_deploy -C "ai-english-lab-server" -N ""
+cat /root/.ssh/ai_english_deploy.pub
 ```
 
-执行唯一一条配置命令，把域名替换成你自己的域名：
+复制输出的整行公钥，进入 GitHub 仓库的 **Settings → Deploy keys → Add deploy key**，填写标题并粘贴公钥。保持 **Allow write access** 未勾选。
+
+授权完成后，将项目克隆到 `/opt`。不要克隆到 `/root`：应用会以非 root 用户运行，无法读取 `/root` 中的项目文件。
+
+```bash
+cd /opt
+GIT_SSH_COMMAND="ssh -i /root/.ssh/ai_english_deploy -o IdentitiesOnly=yes" git clone git@github.com:guai6mmt/ai-english-intensive-reading-lab.git
+cd /opt/ai-english-intensive-reading-lab
+git config core.sshCommand "ssh -i /root/.ssh/ai_english_deploy -o IdentitiesOnly=yes"
+```
+
+第一次连接 GitHub 如果出现 `Are you sure you want to continue connecting`，核对主机为 `github.com` 后输入 `yes`。
+
+> 所有终端命令都应从代码块复制。命令中的仓库地址必须是纯地址，前后不能带用于网页排版的方括号或圆括号。
+
+然后执行唯一一条配置命令，把示例域名替换成你自己的域名：
+
+```bash
+env DOMAIN=english.example.com bash scripts/server_install_or_update.sh
+```
+
+如果使用的是普通 sudo 账号，则在安装命令前加 `sudo`：
 
 ```bash
 sudo env DOMAIN=english.example.com bash scripts/server_install_or_update.sh
@@ -97,31 +121,33 @@ sudo env DOMAIN=english.example.com bash scripts/server_install_or_update.sh
 ### 没有域名，仅在服务器本机使用
 
 ```bash
-sudo bash scripts/server_install_or_update.sh
+bash scripts/server_install_or_update.sh
 ```
 
-此时应用仅监听 `http://127.0.0.1:8010`，不会直接暴露到公网。以后有域名时，用带 `DOMAIN` 的命令重新运行即可补齐 HTTPS 配置。
+普通用户运行时使用 `sudo bash scripts/server_install_or_update.sh`。此时应用仅监听 `http://127.0.0.1:8010`，不会直接暴露到公网。以后有域名时，用带 `DOMAIN` 的命令重新运行即可补齐 HTTPS 配置。
 
 ### 一键更新
 
 ```bash
-cd ai-english-intensive-reading-lab
+cd /opt/ai-english-intensive-reading-lab
 bash scripts/server_safe_update.sh
 ```
 
-更新脚本会拉取 `main` 最新代码、安装新增依赖、检查代码、备份实际数据目录、受控重启并验证健康状态。数据库备份保存在项目的 `backups/` 目录，默认保留最近 5 份。
+之前设置的 Deploy Key 会继续用于 `git pull`，不需要再次输入用户名或密码。更新脚本会拉取 `main` 最新代码、安装新增依赖、检查代码、备份实际数据目录、受控重启并验证健康状态。数据库备份保存在项目的 `backups/` 目录，默认保留最近 5 份。
 
 ### 常用运维命令
 
+以下命令按 root 用户编写；普通用户需要在命令开头添加 `sudo`。
+
 ```bash
 # 查看状态
-sudo systemctl status ai-english-lab
+systemctl status ai-english-lab
 
 # 查看实时日志
-sudo journalctl -u ai-english-lab -f
+journalctl -u ai-english-lab -f
 
 # 重启服务
-sudo systemctl restart ai-english-lab
+systemctl restart ai-english-lab
 ```
 
 更详细的公网部署与备份说明见 [deploy/README.md](deploy/README.md)。
@@ -129,6 +155,8 @@ sudo systemctl restart ai-english-lab
 ## Windows 一键启动
 
 ### 第一次使用
+
+私有仓库需要先登录 GitHub。推荐安装 Git for Windows 后通过弹出的 Git Credential Manager 浏览器窗口登录；如果终端要求输入 `Password`，必须填写 Personal Access Token，不能填写 GitHub 账号密码。[GitHub HTTPS 鉴权说明](https://docs.github.com/en/get-started/git-basics/about-remote-repositories#cloning-with-https-urls)
 
 ```cmd
 git clone https://github.com/guai6mmt/ai-english-intensive-reading-lab.git
@@ -147,6 +175,8 @@ http://127.0.0.1:8010
 系统要求：Windows 10/11、Python 3.10 或更高版本、Git。安装 Python 时需要勾选 **Add Python to PATH**。
 
 ## macOS / Linux 本地启动
+
+私有仓库同样需要先配置 GitHub SSH Key，或者在 HTTPS 的 `Password` 提示中使用 Personal Access Token，不能使用账号登录密码。
 
 ```bash
 git clone https://github.com/guai6mmt/ai-english-intensive-reading-lab.git
@@ -190,8 +220,10 @@ MINIMAX_API_KEY=你的 MiniMax API Key
 完整配置示例见 [.env.example](.env.example)。修改服务器 `.env` 后执行：
 
 ```bash
-sudo systemctl restart ai-english-lab
+systemctl restart ai-english-lab
 ```
+
+普通用户需要在命令开头添加 `sudo`。
 
 ## 一键部署的可选参数
 
@@ -210,8 +242,10 @@ sudo systemctl restart ai-english-lab
 例如，修改端口和媒体磁盘位置：
 
 ```bash
-sudo env DOMAIN=english.example.com PORT=8020 MEDIA_STORAGE_ROOT=/mnt/audio/library bash scripts/server_install_or_update.sh
+env DOMAIN=english.example.com PORT=8020 MEDIA_STORAGE_ROOT=/mnt/audio/library bash scripts/server_install_or_update.sh
 ```
+
+普通 sudo 用户需要在命令开头添加 `sudo`。
 
 ## 数据与备份
 
@@ -250,13 +284,21 @@ ai-english-intensive-reading-lab/
 
 ## 常见问题
 
+**GitHub 提示 `Invalid username or token`？**
+
+仓库是私有仓库，GitHub 不接受账号登录密码。服务器按照“Linux 服务器一键部署”章节添加只读 Deploy Key；使用 HTTPS 时，则在 `Password` 提示中填写 Personal Access Token。不要把 Token 拼进 URL，以免进入 Shell 历史记录。
+
+**执行安装后提示运行用户无法读取项目目录？**
+
+不要把项目放在 `/root` 下。按照文档把仓库克隆到 `/opt/ai-english-intensive-reading-lab`，然后重新执行安装命令。
+
 **网页能打开，但手机不能访问？**
 
 手机不能使用服务器上的 `127.0.0.1` 地址。公网服务器请使用一键部署时填写的 HTTPS 域名，并检查 80/443 端口是否开放。
 
 **HTTPS 证书申请失败？**
 
-确认域名解析到了当前服务器，80/443 没有被其他程序占用，并查看 `sudo journalctl -u caddy -f`。
+确认域名解析到了当前服务器，80/443 没有被其他程序占用，并查看 `journalctl -u caddy -f`；普通用户在命令前添加 `sudo`。
 
 **服务器目录扫描不到文件？**
 
