@@ -4,21 +4,21 @@
 
 ## 一键部署
 
-先按照主 README 的“Linux 服务器一键部署”章节为私有仓库添加 Deploy Key，并将仓库克隆到 `/opt/ai-english-intensive-reading-lab`。再把域名解析到服务器、开放 TCP 80/443，然后在项目目录运行。
+仓库已经公开，不需要 GitHub 登录。先把域名解析到服务器并开放 TCP 80/443，然后运行一条命令。
 
 root 用户：
 
 ```bash
-cd /opt/ai-english-intensive-reading-lab
-env DOMAIN=english.example.com bash scripts/server_install_or_update.sh
+curl -fsSL https://raw.githubusercontent.com/guai6mmt/ai-english-intensive-reading-lab/main/install.sh | bash -s -- english.example.com
 ```
 
 普通 sudo 用户：
 
 ```bash
-cd ai-english-intensive-reading-lab
-sudo env DOMAIN=english.example.com bash scripts/server_install_or_update.sh
+curl -fsSL https://raw.githubusercontent.com/guai6mmt/ai-english-intensive-reading-lab/main/install.sh | sudo bash -s -- english.example.com
 ```
+
+首次安装和以后更新都可以使用这条命令。脚本自动下载到 `/opt/ai-english-intensive-reading-lab`；如果发现同名非 Git 目录，会先移动为带时间戳的备份，不会直接删除。
 
 脚本会生成以下部署结构：
 
@@ -61,9 +61,9 @@ bash scripts/server_safe_update.sh
 - 公网只应开放 SSH、TCP 80 和 TCP 443，不要直接开放应用端口 8010。
 - 媒体目录需要服务用户读写，导入目录需要服务用户读取。
 
-## 自定义配置
+## 高级基础设施配置
 
-用环境变量覆盖默认值后，重新运行安装脚本即可：
+正常部署不需要阅读本节。AI、TTS、ASR、OSS 和阅读偏好全部在网页设置中完成。只有需要更换磁盘、端口或服务用户时，才需要在项目目录用环境变量重新运行底层安装器：
 
 ```bash
 env \
@@ -78,7 +78,7 @@ env \
 
 普通用户在 `env` 前添加 `sudo`。
 
-已有 `.env` 不会被删除，脚本只自动更新数据目录、媒体目录、导入目录、API 文档开关和 Cookie 安全设置。AI 服务 Key 会被保留。
+已有 `.env` 不会被删除，脚本只自动更新数据目录、媒体目录、导入目录、API 文档开关和 Cookie 安全设置。网页中保存的 AI 服务配置会被保留。
 
 ## 检查与排错
 

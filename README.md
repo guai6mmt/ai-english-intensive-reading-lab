@@ -4,6 +4,16 @@
 
 项目仓库：<https://github.com/guai6mmt/ai-english-intensive-reading-lab>
 
+## 最快部署
+
+域名解析到 Debian/Ubuntu 服务器并开放 80/443 后，root 用户只需运行下面一行。将最后的 `english.example.com` 换成自己的域名：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/guai6mmt/ai-english-intensive-reading-lab/main/install.sh | bash -s -- english.example.com
+```
+
+完成后打开 `https://你的域名`：创建管理员 → 网页自动打开设置 → 按需填写 AI Key → 开始导入文章或音频。除域名外，不需要在服务器终端配置任何内容。
+
 ## 系统功能
 
 ### 私人音频资料库
@@ -59,81 +69,47 @@
 
 ## Linux 服务器一键部署（推荐）
 
-适用于 Debian、Ubuntu 及其常见云服务器。部署前只需：
+适用于 Debian、Ubuntu 及其常见云服务器。仓库已经公开，安装过程不需要 GitHub 账号、密码、Token 或 SSH Key。
+
+部署前只需要：
 
 1. 准备一个域名，并将域名的 A/AAAA 记录解析到服务器。
 2. 在云平台安全组或防火墙中开放 TCP `80` 和 `443`。
-3. 使用 `root`，或者确保当前普通账号可以使用 `sudo`。
+3. 使用 root 登录服务器；普通用户也可以使用下面的 sudo 命令。
 
-### 第一次安装
+### 一条命令完成安装
 
-本仓库当前为私有仓库。GitHub 已停止支持使用账号登录密码执行 Git 操作，因此服务器需要先进行一次授权。长期部署推荐使用只能读取这一个仓库的 Deploy Key，不要把 GitHub 密码、Token 或私钥写进命令和脚本。[GitHub Deploy Key 官方说明](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
-
-以下命令适用于你当前这种 `root@服务器` 的登录方式。先生成服务器专用密钥：
+root 用户直接复制下面这一行，只把最后的示例域名换成自己的域名：
 
 ```bash
-install -d -m 700 /root/.ssh
-test -f /root/.ssh/ai_english_deploy || ssh-keygen -t ed25519 -f /root/.ssh/ai_english_deploy -C "ai-english-lab-server" -N ""
-cat /root/.ssh/ai_english_deploy.pub
+curl -fsSL https://raw.githubusercontent.com/guai6mmt/ai-english-intensive-reading-lab/main/install.sh | bash -s -- english.example.com
 ```
 
-复制输出的整行公钥，进入 GitHub 仓库的 **Settings → Deploy keys → Add deploy key**，填写标题并粘贴公钥。保持 **Allow write access** 未勾选。
-
-授权完成后，将项目克隆到 `/opt`。不要克隆到 `/root`：应用会以非 root 用户运行，无法读取 `/root` 中的项目文件。
+普通用户使用：
 
 ```bash
-cd /opt
-GIT_SSH_COMMAND="ssh -i /root/.ssh/ai_english_deploy -o IdentitiesOnly=yes" git clone git@github.com:guai6mmt/ai-english-intensive-reading-lab.git
-cd /opt/ai-english-intensive-reading-lab
-git config core.sshCommand "ssh -i /root/.ssh/ai_english_deploy -o IdentitiesOnly=yes"
+curl -fsSL https://raw.githubusercontent.com/guai6mmt/ai-english-intensive-reading-lab/main/install.sh | sudo bash -s -- english.example.com
 ```
 
-第一次连接 GitHub 如果出现 `Are you sure you want to continue connecting`，核对主机为 `github.com` 后输入 `yes`。
-
-> 所有终端命令都应从代码块复制。命令中的仓库地址必须是纯地址，前后不能带用于网页排版的方括号或圆括号。
-
-然后执行唯一一条配置命令，把示例域名替换成你自己的域名：
-
-```bash
-env DOMAIN=english.example.com bash scripts/server_install_or_update.sh
-```
-
-如果使用的是普通 sudo 账号，则在安装命令前加 `sudo`：
-
-```bash
-sudo env DOMAIN=english.example.com bash scripts/server_install_or_update.sh
-```
+域名是 HTTPS 建立前唯一必须提供的服务器信息，无法等网页启动后再设置。除此之外，不需要在终端填写任何配置。
 
 脚本会自动完成：
 
-1. 安装 Python、FFmpeg、SQLite，并通过 [Caddy 官方软件源](https://caddyserver.com/docs/install#debian-ubuntu-raspbian)安装 Caddy；
-2. 创建虚拟环境并安装项目依赖；
-3. 创建 `/srv/english-lab` 下的数据、媒体和待导入目录；
-4. 生成 `.env` 并自动写入安全的服务器配置；
+1. 从公开 GitHub 仓库下载最新代码到 `/opt/ai-english-intensive-reading-lab`；
+2. 安装 Python、FFmpeg、SQLite，并通过 [Caddy 官方软件源](https://caddyserver.com/docs/install#debian-ubuntu-raspbian)安装 Caddy；
+3. 创建虚拟环境、运行用户及 `/srv/english-lab` 数据目录；
+4. 自动生成服务端安全配置，不写入任何假的 API Key；
 5. 创建并启动 systemd 服务；
 6. 配置 Caddy HTTPS、压缩和安全响应头；
 7. 执行健康检查并显示最终访问地址。
 
-安装完成后打开 `https://你的域名`，按照页面提示创建管理员账号。整个服务器部署过程不需要手工编辑 `.env`、Caddyfile 或 systemd 文件。
+安装完成后打开 `https://你的域名`，创建管理员账号。系统随后会自动打开网页设置面板，在网页中填写模型和 API Key。音频资料库不需要 AI Key，可以直接使用。
 
 > Caddy 需要域名已经正确解析，才能自动申请 HTTPS 证书。DNS 刚修改时可能需要等待解析生效。
 
-### 没有域名，仅在服务器本机使用
-
-```bash
-bash scripts/server_install_or_update.sh
-```
-
-普通用户运行时使用 `sudo bash scripts/server_install_or_update.sh`。此时应用仅监听 `http://127.0.0.1:8010`，不会直接暴露到公网。以后有域名时，用带 `DOMAIN` 的命令重新运行即可补齐 HTTPS 配置。
-
 ### 一键更新
 
-```bash
-cd /opt/ai-english-intensive-reading-lab
-bash scripts/server_safe_update.sh
-```
-
-之前设置的 Deploy Key 会继续用于 `git pull`，不需要再次输入用户名或密码。更新脚本会拉取 `main` 最新代码、安装新增依赖、检查代码、备份实际数据目录、受控重启并验证健康状态。数据库备份保存在项目的 `backups/` 目录，默认保留最近 5 份。
+再次执行完全相同的一键安装命令即可更新。脚本会识别现有安装、拉取公开仓库的最新代码并保留数据库、媒体和网页配置。也可以运行项目内的 `bash scripts/server_safe_update.sh`，更新前会自动备份数据库。
 
 ### 常用运维命令
 
@@ -156,8 +132,6 @@ systemctl restart ai-english-lab
 
 ### 第一次使用
 
-私有仓库需要先登录 GitHub。推荐安装 Git for Windows 后通过弹出的 Git Credential Manager 浏览器窗口登录；如果终端要求输入 `Password`，必须填写 Personal Access Token，不能填写 GitHub 账号密码。[GitHub HTTPS 鉴权说明](https://docs.github.com/en/get-started/git-basics/about-remote-repositories#cloning-with-https-urls)
-
 ```cmd
 git clone https://github.com/guai6mmt/ai-english-intensive-reading-lab.git
 cd ai-english-intensive-reading-lab
@@ -175,8 +149,6 @@ http://127.0.0.1:8010
 系统要求：Windows 10/11、Python 3.10 或更高版本、Git。安装 Python 时需要勾选 **Add Python to PATH**。
 
 ## macOS / Linux 本地启动
-
-私有仓库同样需要先配置 GitHub SSH Key，或者在 HTTPS 的 `Password` 提示中使用 Personal Access Token，不能使用账号登录密码。
 
 ```bash
 git clone https://github.com/guai6mmt/ai-english-intensive-reading-lab.git
@@ -206,46 +178,18 @@ bash scripts/mac_start.sh
 
 ## AI 模型配置（可选）
 
-音频资料库本身不需要 AI Key。需要长难句分析、写作反馈、ASR 或 TTS 时，在网页右上角进入“设置”，填写相应服务的 Key 即可。
+音频资料库本身不需要 AI Key。首次创建管理员后，系统会自动打开“偏好与模型设置”窗口。以后也可以点击网页右上角的“设置”。
 
-也可以编辑项目根目录的 `.env`：
+网页可以完成以下配置，无需登录服务器或编辑 `.env`：
 
-```env
-DEEPSEEK_API_KEY=你的 DeepSeek API Key
-QWEN_API_KEY=你的 Qwen / DashScope API Key
-DASHSCOPE_API_KEY=你的 DashScope API Key
-MINIMAX_API_KEY=你的 MiniMax API Key
-```
+- 为文本分析、图片理解和 AI 朗读分别选择模型；
+- 填写并测试 DeepSeek 和 Qwen API Key；
+- 配置 Qwen TTS、DashScope ASR；
+- 配置阿里云 OSS 音频中转；
+- 配置 MiniMax TTS、声音、语速和模型；
+- 调整阅读主题、字号与行距。
 
-完整配置示例见 [.env.example](.env.example)。修改服务器 `.env` 后执行：
-
-```bash
-systemctl restart ai-english-lab
-```
-
-普通用户需要在命令开头添加 `sudo`。
-
-## 一键部署的可选参数
-
-默认配置已经适合个人服务器。如需调整，可在安装命令前传入：
-
-| 参数 | 默认值 | 用途 |
-|---|---|---|
-| `DOMAIN` | 空 | 公网域名；设置后自动安装 Caddy 并启用 HTTPS |
-| `PORT` | `8010` | 应用本机监听端口 |
-| `SERVICE_NAME` | `ai-english-lab` | systemd 服务名称 |
-| `APP_USER` | 执行 sudo 的普通用户 | 服务运行用户 |
-| `ENGLISH_LAB_DATA_DIR` | `/srv/english-lab/data` | 数据库和应用数据目录 |
-| `MEDIA_STORAGE_ROOT` | `/srv/english-lab/media` | 受管理音频存储目录 |
-| `MEDIA_IMPORT_ROOT` | `/srv/english-lab/import` | 允许服务器扫描的导入目录 |
-
-例如，修改端口和媒体磁盘位置：
-
-```bash
-env DOMAIN=english.example.com PORT=8020 MEDIA_STORAGE_ROOT=/mnt/audio/library bash scripts/server_install_or_update.sh
-```
-
-普通 sudo 用户需要在命令开头添加 `sudo`。
+保存的密钥不会在页面中明文回显。音频上传、整理和普通播放可以完全不配置 AI 服务。
 
 ## 数据与备份
 
@@ -266,6 +210,7 @@ env DOMAIN=english.example.com PORT=8020 MEDIA_STORAGE_ROOT=/mnt/audio/library b
 
 ```text
 ai-english-intensive-reading-lab/
+├── install.sh                      # 公开仓库服务器一键安装入口
 ├── app.py                          # FastAPI 主应用
 ├── english_lab/                    # 登录、数据库、健康检查、音频库 API
 ├── static/                         # 精读页面、音频管理页、手机播放器和 PWA
@@ -278,19 +223,15 @@ ai-english-intensive-reading-lab/
 │   ├── mac_start.sh                # macOS / Linux 本地启动
 │   └── win_start.ps1               # Windows PowerShell 启动
 ├── start.bat                       # Windows 双击启动
-├── .env.example                    # 完整可选配置
+├── .env.example                    # 高级运维参考，正常部署无需编辑
 └── requirements.txt                # Python 运行依赖
 ```
 
 ## 常见问题
 
-**GitHub 提示 `Invalid username or token`？**
+**一键安装时仍然要求 GitHub 用户名？**
 
-仓库是私有仓库，GitHub 不接受账号登录密码。服务器按照“Linux 服务器一键部署”章节添加只读 Deploy Key；使用 HTTPS 时，则在 `Password` 提示中填写 Personal Access Token。不要把 Token 拼进 URL，以免进入 Shell 历史记录。
-
-**执行安装后提示运行用户无法读取项目目录？**
-
-不要把项目放在 `/root` 下。按照文档把仓库克隆到 `/opt/ai-english-intensive-reading-lab`，然后重新执行安装命令。
+确认使用的是 README 中以 `raw.githubusercontent.com` 开头的完整一键命令。公开仓库不需要 GitHub 登录；脚本会自动把旧安装的远端地址改为公开 HTTPS 地址。
 
 **网页能打开，但手机不能访问？**
 
@@ -302,7 +243,7 @@ ai-english-intensive-reading-lab/
 
 **服务器目录扫描不到文件？**
 
-文件必须位于 `/srv/english-lab/import` 或自定义的 `MEDIA_IMPORT_ROOT` 中，而且运行服务的用户必须有读取权限。
+文件必须位于 `/srv/english-lab/import` 中，而且运行服务的用户必须有读取权限。更简单的方式是在音频库网页直接选择电脑文件夹上传。
 
 **Windows 提示 Python not found？**
 
@@ -316,4 +257,4 @@ Windows：
 set PORT=8020 && start.bat
 ```
 
-服务器：重新执行带 `PORT=8020` 的一键配置命令。
+服务器默认端口由脚本管理，不需要对公网开放 8010。如果端口确实冲突，请查看高级部署说明。

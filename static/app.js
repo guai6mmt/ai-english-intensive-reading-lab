@@ -271,6 +271,13 @@ async function loadSecondaryData() {
   renderSidebar();
   renderLibraryView();
   fillSettingsForm();
+  const pageParams = new URLSearchParams(location.search);
+  if (pageParams.get("first_setup") === "1") {
+    $("firstSetupNotice").hidden = false;
+    if (!$('settingsDialog').open) $('settingsDialog').showModal();
+    pageParams.delete("first_setup");
+    history.replaceState({}, "", `${location.pathname}${pageParams.size ? `?${pageParams}` : ""}${location.hash}`);
+  }
   if (state.currentArticle) {
     const fresh = allArticles().find((a) => a.id === state.currentArticle.id);
     if (fresh && state.view === "study") {

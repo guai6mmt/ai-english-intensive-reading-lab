@@ -42,7 +42,7 @@ $("loginForm").addEventListener("submit", async (event) => {
       body: JSON.stringify({ username: $("username").value.trim(), password: $("password").value }),
     });
     const next = new URLSearchParams(location.search).get("next");
-    location.replace(next && next.startsWith("/") ? next : "/");
+    location.replace(setupRequired ? "/?first_setup=1" : (next && next.startsWith("/") ? next : "/"));
   } catch (error) {
     $("status").textContent = error.message;
     $("submitBtn").disabled = false;

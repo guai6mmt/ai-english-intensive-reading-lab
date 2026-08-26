@@ -94,8 +94,11 @@ $SUDO install -d -m 750 -o "$APP_USER" -g "$APP_GROUP" "$MEDIA_DIR/originals" "$
 
 echo "==> 4/7 生成运行配置"
 if [ ! -f ".env" ]; then
-  cp .env.example .env
+  touch .env
 fi
+
+# 清除旧安装从 .env.example 复制出的中文占位符；AI Key 统一在网页中填写。
+sed -i '/=你的 .*\(API Key\|AccessKey\|Bucket\|GroupId\)/d' .env
 
 set_env_value() {
   local key="$1"
