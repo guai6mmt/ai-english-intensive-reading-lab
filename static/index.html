@@ -3,7 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f7f5ed" />
     <title>AI English Intensive Reading Lab</title>
+    <link rel="icon" href="/static/icons/app-icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <script src="/static/auth.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -72,6 +76,7 @@
             <span class="crumb-link" data-go="library">文章库</span>
           </div>
           <button class="btn ghost" id="kbdHelpBtn" title="键盘快捷键"><span class="kbd">?</span></button>
+          <button class="btn" id="audioLibraryBtn" title="打开服务器音频库">♫ 音频库</button>
           <button class="btn" id="favoriteBtn" title="收藏文章" hidden>★ 收藏</button>
           <button class="btn" id="batchAnalyzeBtn" title="一键执行所有 AI 分析" hidden>⚡ 一键分析</button>
           <button class="btn" id="listenModeBtn" title="进入听力模式（地铁场景优化）" hidden>🎧 听力模式</button>

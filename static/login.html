@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#111713" />
+    <title>登录 · English Lab</title>
+    <link rel="icon" href="/static/icons/app-icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="stylesheet" href="/static/login.css" />
+  </head>
+  <body>
+    <main class="login-shell">
+      <section class="login-card">
+        <div class="brand-mark">EL</div>
+        <p class="eyebrow">SELF-HOSTED ENGLISH LAB</p>
+        <h1 id="title">登录</h1>
+        <p class="intro" id="intro">连接你的私人英语学习服务器。</p>
+        <form id="loginForm">
+          <label>用户名<input id="username" autocomplete="username" required minlength="2" maxlength="64" /></label>
+          <label>密码<input id="password" type="password" autocomplete="current-password" required minlength="10" maxlength="256" /></label>
+          <label id="confirmLabel" hidden>确认密码<input id="confirmPassword" type="password" autocomplete="new-password" minlength="10" maxlength="256" /></label>
+          <button type="submit" id="submitBtn">登录</button>
+        </form>
+        <p class="status" id="status" role="status"></p>
+      </section>
+    </main>
+    <script src="/static/login.js"></script>
+  </body>
+</html>

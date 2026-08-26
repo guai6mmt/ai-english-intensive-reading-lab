@@ -1832,6 +1832,7 @@ document.addEventListener("click", async (event) => {
   if (target.id === "openSettingsBtn") { $("settingsDialog").showModal(); return; }
   if (target.id === "closeSettingsBtn") { $("settingsDialog").close(); return; }
   if (target.id === "saveSettingsBtn") { saveTweaks(); applyTweaks(); $("settingsDialog").close(); return; }
+  if (target.id === "audioLibraryBtn") { window.location.href = "/media"; return; }
   if (target.id === "saveAllSettingsBtn") {
     await runAction(target, "保存中…", async () => {
       state.settings = await api("/api/settings", {

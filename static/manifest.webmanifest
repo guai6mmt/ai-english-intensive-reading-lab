@@ -1,0 +1,14 @@
+{
+  "name": "English Lab Listening",
+  "short_name": "English Lab",
+  "description": "自托管英语精读与听力资料库",
+  "lang": "zh-CN",
+  "start_url": "/media",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f3f3ed",
+  "theme_color": "#1b3325",
+  "icons": [
+    { "src": "/static/icons/app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

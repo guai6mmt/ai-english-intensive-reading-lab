@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 服务器端安全增量更新：拉取新代码 → 语法校验 → 健康检查 → 平滑重启
+# 服务器端安全增量更新：拉取新代码 → 语法校验 → 备份 → 受控重启 → 健康检查
 # 用法（在服务器上执行）：
 #   bash scripts/server_safe_update.sh
 # 可选环境变量：
@@ -29,11 +29,17 @@ fi
 # 备份 data 目录（小项目数据量不大，几秒就能完成；用户数据是最重要的）
 if [ "$SKIP_BACKUP" != "1" ] && [ -d "data" ]; then
   STAMP=$(date +%Y%m%d-%H%M%S)
-  BACKUP_FILE="data-backup-${STAMP}.tar.gz"
-  echo "==> 2/6 备份 data → ${BACKUP_FILE}"
-  tar -czf "${BACKUP_FILE}" data
+  BACKUP_DIR="backups"
+  mkdir -p "$BACKUP_DIR"
+  BACKUP_FILE="${BACKUP_DIR}/data-backup-${STAMP}.tar.gz"
+  if [ -f "data/app.db" ] && command -v sqlite3 >/dev/null 2>&1; then
+    sqlite3 data/app.db ".backup '${BACKUP_DIR}/app-${STAMP}.db'"
+  fi
+  echo "==> 2/6 备份数据库与应用数据 → ${BACKUP_FILE}"
+  tar --exclude='data/media' --exclude='data/app.db' --exclude='data/app.db-wal' --exclude='data/app.db-shm' -czf "${BACKUP_FILE}" data
   # 仅保留最近 5 份备份
-  ls -1t data-backup-*.tar.gz 2>/dev/null | tail -n +6 | xargs -r rm -f
+  ls -1t backups/data-backup-*.tar.gz 2>/dev/null | tail -n +6 | xargs -r rm -f
+  ls -1t backups/app-*.db 2>/dev/null | tail -n +6 | xargs -r rm -f
 else
   echo "==> 2/6 已跳过 data 备份"
 fi
@@ -59,23 +65,27 @@ python -m pip install --upgrade pip --quiet
 python -m pip install -r requirements.txt --quiet
 
 echo "==> 5/6 语法 / 导入校验（不重启服务）"
-python -B -c "import ast, pathlib; [ast.parse(pathlib.Path(p).read_text(encoding='utf-8')) for p in ['app.py','V6_english_analyzer.py']]"
+python -B -c "import ast, pathlib; files=['app.py','V6_english_analyzer.py','video_render.py',*[str(p) for p in pathlib.Path('english_lab').glob('*.py')]]; [ast.parse(pathlib.Path(p).read_text(encoding='utf-8')) for p in files]"
 # 完整 import 测试，确保依赖齐全且模块结构未损坏
 python -B -c "import importlib, sys; sys.path.insert(0, '.'); m = importlib.import_module('app'); assert hasattr(m, 'app'), 'FastAPI app 对象未找到'"
 if command -v node >/dev/null 2>&1; then
   node --check static/app.js
+  node --check static/listen.js
+  node --check static/auth.js
+  node --check static/login.js
+  node --check static/media.js
 fi
 
-echo "==> 6/6 平滑重启 systemd 服务"
+echo "==> 6/6 受控重启 systemd 服务"
 sudo systemctl daemon-reload
 sudo systemctl restart "$SERVICE_NAME"
 
 # 等待端口重新可用并做健康检查（最多 20 秒）
 echo "    等待端口 ${PORT} 重新上线 ..."
 for i in $(seq 1 20); do
-  if curl -fsS "http://127.0.0.1:${PORT}/api/library" >/dev/null 2>&1; then
+  if curl -fsS "http://127.0.0.1:${PORT}/health/ready" >/dev/null 2>&1; then
     echo "    ✓ 服务已重新上线（${i}s 内恢复）"
-    echo "Done. http://0.0.0.0:${PORT}"
+    echo "Done. http://127.0.0.1:${PORT}"
     exit 0
   fi
   sleep 1

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#1b3325" />
+    <title>音频库 · English Lab</title>
+    <link rel="icon" href="/static/icons/app-icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="stylesheet" href="/static/media.css" />
+    <script src="/static/auth.js"></script>
+  </head>
+  <body>
+    <div class="media-app">
+      <header class="topbar">
+        <a class="brand" href="/"><span class="brand-mark">EL</span><span><strong>English Lab</strong><small>私人听力资料库</small></span></a>
+        <nav><a href="/">文章库</a><a class="active" href="/media">音频库</a></nav>
+        <div class="top-actions">
+          <button class="quiet" id="scanBtn">扫描服务器</button>
+          <button class="primary" id="importBtn">＋ 导入文件夹</button>
+          <button class="avatar" id="userBtn" title="退出登录">管</button>
+        </div>
+      </header>
+
+      <main>
+        <section class="hero">
+          <div><p class="eyebrow">LISTENING LIBRARY</p><h1>音频库</h1><p id="summaryText">正在读取服务器资料…</p></div>
+          <div class="stats" id="stats"></div>
+        </section>
+
+        <section class="workspace">
+          <aside class="collections">
+            <div class="aside-title">资料分类</div>
+            <button class="collection active" data-collection=""><span>全部音频</span><b id="allCount">0</b></button>
+            <button class="collection" data-special="favorite"><span>我的收藏</span><b>★</b></button>
+            <button class="collection" data-special="deleted"><span>回收站</span><b id="deletedCount">0</b></button>
+            <div class="collection-list" id="collectionList"></div>
+          </aside>
+
+          <section class="library">
+            <div class="library-controls">
+              <label class="search"><span>⌕</span><input id="searchInput" placeholder="搜索标题、文件夹或标签…" /></label>
+              <select id="sortSelect" aria-label="排序">
+                <option value="created">最近导入</option>
+                <option value="title">标题</option>
+                <option value="duration">时长</option>
+                <option value="size">文件大小</option>
+              </select>
+              <button class="quiet" id="refreshBtn">刷新</button>
+            </div>
+            <div class="notice" id="notice" hidden></div>
+            <div class="media-list" id="mediaList"></div>
+            <button class="load-more quiet" id="loadMoreBtn" hidden>加载更多</button>
+            <div class="empty" id="emptyState" hidden><div>♫</div><h2>音频库是空的</h2><p>导入电脑中的音频文件夹，或扫描服务器导入目录。</p></div>
+          </section>
+        </section>
+      </main>
+
+      <footer class="player" id="playerBar" data-open="false">
+        <audio id="audio"></audio>
+        <div class="now"><div class="cover">EL</div><div><strong id="nowTitle">选择一条音频开始练习</strong><small id="nowMeta">—</small></div></div>
+        <div class="transport">
+          <div class="transport-buttons">
+            <button id="prevBtn" aria-label="上一条">⏮</button><button id="backBtn" aria-label="后退十五秒">−15</button>
+            <button class="play" id="playBtn" aria-label="播放暂停">▶</button>
+            <button id="forwardBtn" aria-label="前进十五秒">+15</button><button id="nextBtn" aria-label="下一条">⏭</button>
+          </div>
+          <div class="timeline"><span id="currentTime">0:00</span><input id="seek" type="range" min="0" max="1000" value="0" /><span id="duration">0:00</span></div>
+        </div>
+        <div class="player-actions"><button id="abBtn" title="设置 A-B 循环">A–B</button><button id="favoriteBtn" title="收藏">☆</button><select id="rateSelect" aria-label="播放速度"><option>0.75</option><option>0.85</option><option selected>1</option><option>1.15</option><option>1.25</option><option>1.5</option><option>2</option></select></div>
+      </footer>
+    </div>
+
+    <dialog id="importDialog">
+      <form method="dialog" class="dialog-card">
+        <div class="dialog-head"><div><p class="eyebrow">BATCH IMPORT</p><h2>导入电脑文件夹</h2></div><button value="cancel" class="icon-close">×</button></div>
+        <p>保留文件夹层级，逐个上传并自动检查重复文件。中断后可以重新选择同一文件夹，已导入内容会自动跳过。</p>
+        <label class="drop-zone" for="folderInput"><strong>选择音频文件夹</strong><span>MP3、M4A、AAC、WAV、FLAC、OGG、OPUS、M4B</span></label>
+        <input id="folderInput" type="file" accept="audio/*,.m4b,.opus" webkitdirectory multiple hidden />
+        <div class="import-progress" id="importProgress" hidden><div><span id="importText">准备上传…</span><b id="importPct">0%</b></div><progress id="importBar" max="100" value="0"></progress></div>
+      </form>
+    </dialog>
+
+    <dialog id="scanDialog">
+      <form method="dialog" class="dialog-card" id="scanForm">
+        <div class="dialog-head"><div><p class="eyebrow">SERVER SCAN</p><h2>扫描服务器目录</h2></div><button value="cancel" class="icon-close">×</button></div>
+        <p>路径相对于管理员配置的 <code>MEDIA_IMPORT_ROOT</code>，留空表示扫描整个导入目录。</p>
+        <label>相对路径<input id="scanPath" placeholder="例如：BBC/2026" /></label>
+        <div class="dialog-actions"><button value="cancel" class="quiet">取消</button><button type="submit" value="default" class="primary">开始扫描</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="editDialog">
+      <form method="dialog" class="dialog-card" id="editForm">
+        <div class="dialog-head"><div><p class="eyebrow">METADATA</p><h2>编辑音频</h2></div><button value="cancel" class="icon-close">×</button></div>
+        <label>标题<input id="editTitle" required maxlength="500" /></label>
+        <label>难度<select id="editDifficulty"><option value="">未设置</option><option>A1</option><option>A2</option><option>B1</option><option>B2</option><option>C1</option><option>C2</option></select></label>
+        <label>标签<input id="editTags" placeholder="新闻, 商务, 发音" /></label>
+        <label>说明<textarea id="editDescription" rows="4"></textarea></label>
+        <div class="dialog-actions"><button value="cancel" class="quiet">取消</button><button type="submit" value="default" class="primary">保存</button></div>
+      </form>
+    </dialog>
+
+    <script src="/static/media.js"></script>
+  </body>
+</html>

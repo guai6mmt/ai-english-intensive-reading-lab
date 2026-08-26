@@ -1,0 +1,18 @@
+:root { color-scheme: light; font-family: Inter, "Segoe UI", system-ui, sans-serif; background: #eef0e8; color: #172019; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; min-height: 100dvh; background: radial-gradient(circle at 20% 10%, #fffdf3 0, transparent 36%), #eef0e8; }
+.login-shell { min-height: 100dvh; display: grid; place-items: center; padding: 24px; }
+.login-card { width: min(100%, 410px); padding: 38px; background: rgba(255,255,250,.94); border: 1px solid #d7dace; border-radius: 20px; box-shadow: 0 24px 70px rgba(33,47,36,.13); }
+.brand-mark { display: grid; place-items: center; width: 46px; height: 46px; border-radius: 11px; background: #172019; color: #f9f4df; font: 700 20px Georgia, serif; }
+.eyebrow { margin: 28px 0 8px; color: #6e776e; font-size: 11px; letter-spacing: .16em; }
+h1 { margin: 0; font: 600 38px/1.1 Georgia, "Times New Roman", serif; }
+.intro { margin: 10px 0 26px; color: #677068; line-height: 1.6; }
+form { display: grid; gap: 16px; }
+label { display: grid; gap: 7px; color: #4f5951; font-size: 13px; }
+input { width: 100%; border: 1px solid #cfd4ca; border-radius: 10px; padding: 12px 13px; background: #fff; color: #172019; font: inherit; outline: none; }
+input:focus { border-color: #477452; box-shadow: 0 0 0 3px rgba(71,116,82,.13); }
+button { margin-top: 4px; border: 0; border-radius: 10px; padding: 13px 18px; background: #244b31; color: #fff; font: 600 14px inherit; cursor: pointer; }
+button:disabled { opacity: .55; cursor: wait; }
+.status { min-height: 20px; margin: 16px 0 0; color: #a13c2d; font-size: 13px; }
+@media (max-width: 480px) { .login-card { padding: 28px 24px; } }

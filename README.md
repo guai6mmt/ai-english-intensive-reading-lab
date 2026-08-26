@@ -1,10 +1,21 @@
 # AI English Intensive Reading Lab
 
-英文长文章精读工具。支持文章导入（EPUB / DOCX / TXT）、正文清洗、长难句分析、词汇分层、阅读答题、听写跟读和写作反馈。
+英文精读与私人听力资料库。支持文章导入（EPUB / DOCX / TXT）、正文清洗、长难句分析、词汇分层、阅读答题、听写跟读、写作反馈，以及服务器音频文件夹导入和手机播放。
 
 ```
 学习主线：文本检查 → 长难句 → 词汇 → 阅读答题 → 听写跟读 → 写作反馈
 ```
+
+## 音频库与手机使用
+
+- 管理网页可以选择整个电脑文件夹，批量导入 MP3 / M4A / AAC / WAV / FLAC / OGG / OPUS / M4B。
+- 服务器可以扫描 `MEDIA_IMPORT_ROOT` 下的目录，并复制到受管理的媒体存储。
+- 自动使用 SHA-256 去重，使用 ffprobe 读取时长、码率和标签。
+- 支持分类、搜索、标签、难度、收藏、回收站和多设备播放进度。
+- 播放接口支持 HTTP Range，可拖动进度、倍速播放、锁屏控制和后台播放。
+- 网页包含 PWA manifest；手机浏览器打开后可以添加到主屏幕。
+
+首次启动会显示管理员创建页面。以后所有文章、模型设置和音频接口都需要登录。
 
 ---
 
@@ -150,6 +161,8 @@ bash scripts/mac_start.sh
 
 打开 `http://127.0.0.1:8010`。
 
+第一次打开时创建管理员账号。密码至少 10 个字符。
+
 ---
 
 ## 服务器部署（Linux）
@@ -162,7 +175,15 @@ cd /opt/ai-english-intensive-reading-lab
 bash scripts/server_install_or_update.sh
 ```
 
-后续更新（无停机）：
+服务只监听 `127.0.0.1:8010`，不能直接暴露到公网。请按照 [deploy/README.md](deploy/README.md) 配置 Caddy/Nginx 和 HTTPS，并在 `.env` 中设置：
+
+```env
+COOKIE_SECURE=true
+MEDIA_STORAGE_ROOT=/srv/english-lab/media
+MEDIA_IMPORT_ROOT=/srv/english-lab/import
+```
+
+后续安全更新（会执行一次短暂重启）：
 
 ```bash
 cd /opt/ai-english-intensive-reading-lab
@@ -176,6 +197,7 @@ bash scripts/deploy_safe.sh ubuntu@服务器IP "本次修改说明"
 ```
 
 > 首次使用 `server_safe_update.sh` 前，需先手动 `git pull origin main` 把脚本拉到服务器。
+> 从旧版本首次升级到音频库版本时，请重新运行一次 `server_install_or_update.sh`，以应用新的 systemd 用户和监听地址。
 
 ---
 
@@ -190,7 +212,9 @@ data/
 ├── outputs.json      # AI 反馈
 ├── progress.json     # 学习进度
 ├── settings.json     # 网页保存的模型设置
-└── uploads/          # 上传的原始文件
+├── uploads/          # 上传的原始文章
+├── app.db            # 用户、会话、音频库和播放进度
+└── media/            # 受管理的音频文件
 ```
 
 ---
@@ -203,17 +227,24 @@ ai-english-intensive-reading-lab/
 ├── app.py                          # FastAPI 后端
 ├── V6_english_analyzer.py          # 难度 / 词频分析
 ├── requirements.txt
+├── requirements-dev.txt
+├── english_lab/                    # 登录、数据库、健康检查和媒体库模块
+├── tests/                          # API 与流媒体集成测试
+├── deploy/                         # HTTPS 反向代理示例
 ├── .env.example
 ├── scripts/
 │   ├── win_start.bat               # 同 start.bat（scripts 内的备用版本）
 │   ├── win_start.ps1               # PowerShell 版启动
 │   ├── mac_start.sh                # Mac / Linux 本地启动
 │   ├── server_install_or_update.sh # 服务器首次部署（systemd）
-│   ├── server_safe_update.sh       # 服务器无停机更新（推荐）
-│   └── deploy_safe.sh              # 本地校验 + 远程平滑重启
+│   ├── server_safe_update.sh       # 服务器备份、校验和安全更新
+│   └── deploy_safe.sh              # 本地校验 + 远程安全重启
 ├── static/
 │   ├── index.html
 │   ├── app.js
+│   ├── media.html / media.js       # 音频管理与手机播放器
+│   ├── auth.js / login.html        # 会话登录
+│   ├── manifest.webmanifest        # PWA
 │   └── styles.css
 └── data/                           # 运行数据（gitignore）
 ```

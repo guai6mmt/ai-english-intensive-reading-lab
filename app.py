@@ -34,6 +34,9 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from english_lab.config import config as server_config
+from english_lab.database import initialize_database
+
 try:
     from openai import OpenAI
 except Exception:  # pragma: no cover - fallback keeps local mode usable.
@@ -48,7 +51,7 @@ except Exception:  # pragma: no cover - OSS is optional until aligned audio is u
 
 
 ROOT = Path(__file__).resolve().parent
-DATA_DIR = ROOT / "data"
+DATA_DIR = server_config.data_root
 UPLOAD_DIR = DATA_DIR / "uploads"
 AUDIO_CACHE_DIR = DATA_DIR / "audio_cache"
 COVERS_DIR = DATA_DIR / "covers"
@@ -159,9 +162,16 @@ MINI_GLOSSARY = {
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ensure_dirs()
+    initialize_database()
     yield
 
-app = FastAPI(title="AI English Intensive Reading Lab", lifespan=lifespan)
+app = FastAPI(
+    title="AI English Intensive Reading Lab",
+    lifespan=lifespan,
+    docs_url="/docs" if server_config.expose_docs else None,
+    redoc_url="/redoc" if server_config.expose_docs else None,
+    openapi_url="/openapi.json" if server_config.expose_docs else None,
+)
 
 
 class PackRequest(BaseModel):
@@ -378,18 +388,31 @@ def ensure_dirs() -> None:
     STATIC_DIR.mkdir(exist_ok=True)
 
 
+_JSON_DATA_LOCK = threading.RLock()
+
+
 def load_json(path: Path, default: Any) -> Any:
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return default
+    with _JSON_DATA_LOCK:
+        if not path.exists():
+            return default
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return default
 
 
 def save_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    with _JSON_DATA_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temp_path.open("w", encoding="utf-8", newline="\n") as output:
+                json.dump(data, output, ensure_ascii=False, indent=2)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temp_path, path)
+        finally:
+            temp_path.unlink(missing_ok=True)
 
 
 def now_iso() -> str:
@@ -1025,10 +1048,11 @@ def library_summary(library: dict[str, Any]) -> dict[str, Any]:
 
 
 def mutate_library(mutator: Callable[[dict[str, Any]], Any]) -> Any:
-    library = load_json(LIBRARY_PATH, {"sources": []})
-    result = mutator(library)
-    save_json(LIBRARY_PATH, library)
-    return result
+    with _JSON_DATA_LOCK:
+        library = load_json(LIBRARY_PATH, {"sources": []})
+        result = mutator(library)
+        save_json(LIBRARY_PATH, library)
+        return result
 
 
 def find_article(article_id: str) -> dict[str, Any]:
@@ -4580,6 +4604,18 @@ def delete_source(source_id: str) -> dict[str, Any]:
 AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 COVERS_DIR.mkdir(parents=True, exist_ok=True)
 VIDEO_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Server extensions are kept in separate modules so the established reading
+# routes remain compatible while authentication and the media library evolve.
+from english_lab.auth import SessionAuthMiddleware, router as auth_router  # noqa: E402
+from english_lab.health import router as health_router  # noqa: E402
+from english_lab.media import router as media_router  # noqa: E402
+
+app.include_router(health_router)
+app.include_router(auth_router)
+app.include_router(media_router)
+app.add_middleware(SessionAuthMiddleware)
+
 app.mount("/audio", StaticFiles(directory=AUDIO_CACHE_DIR), name="audio")
 app.mount("/covers", StaticFiles(directory=COVERS_DIR), name="covers")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

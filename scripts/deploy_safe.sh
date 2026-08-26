@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 在本地（Mac / Linux / Windows + Git Bash）发起的无停机部署：
+# 在本地（Mac / Linux / Windows + Git Bash）发起的安全部署：
 #   1. 提交本地改动 → 推送 GitHub
-#   2. SSH 到服务器执行 server_safe_update.sh（拉取 → 校验 → 备份 data → 平滑重启）
+#   2. SSH 到服务器执行 server_safe_update.sh（拉取 → 校验 → 备份 data → 受控重启）
 #
 # 用法：
 #   bash scripts/deploy_safe.sh user@server "本次修改说明"
@@ -48,7 +48,7 @@ fi
 echo "==> 推送到 origin/${BRANCH}"
 git push origin "$BRANCH"
 
-echo "==> SSH 到 ${SERVER} 执行无停机更新"
+echo "==> SSH 到 ${SERVER} 执行安全更新（服务会短暂重启）"
 ssh "$SERVER" "set -e
   if [ ! -d '${REMOTE_DIR}/.git' ]; then
     echo '远端尚未克隆，首次部署...'

@@ -1,9 +1,11 @@
 __pycache__/
 *.py[cod]
 .venv/
+.pytest_cache/
 
 # Local runtime data and secrets
 data/
+backups/
 *.env
 .env
 
