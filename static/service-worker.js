@@ -1,6 +1,14 @@
-const CACHE_NAME = "english-lab-shell-v1";
+const CACHE_NAME = "english-lab-shell-v2";
 const SHELL = [
+  "/static/index.html",
+  "/static/styles.css",
+  "/static/app.js",
+  "/static/tokens.css",
+  "/static/components.css",
+  "/static/theme.js",
   "/static/auth.js",
+  "/static/login.html",
+  "/static/login.css",
   "/static/media.html",
   "/static/media.css",
   "/static/media.js",
@@ -24,11 +32,11 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.includes("/stream")) return;
   event.respondWith(
     fetch(event.request).then((response) => {
-      if (response.ok && (url.pathname.startsWith("/static/") || url.pathname === "/manifest.webmanifest")) {
+      if (response.ok && response.type !== "opaqueredirect" && (url.pathname.startsWith("/static/") || url.pathname === "/manifest.webmanifest")) {
         const copy = response.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
       }
       return response;
-    }).catch(() => caches.match(event.request).then((cached) => cached || caches.match("/static/media.html")))
+    }).catch(() => caches.match(event.request).then((cached) => cached || caches.match("/static/index.html")))
   );
 });

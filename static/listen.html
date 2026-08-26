@@ -1,34 +1,36 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN" data-theme="dark" data-theme-locked="true">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
-    <meta name="theme-color" content="#0f1115" />
+    <meta name="theme-color" content="#14171a" />
     <title>听力模式 · English Lab</title>
     <link rel="icon" href="/static/icons/app-icon.svg" type="image/svg+xml" />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <script src="/static/auth.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=Inter:wght@400;500;600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/listen.css?v=20260522-v7" />
+    <link rel="stylesheet" href="/static/tokens.css?v=20260826" />
+    <link rel="stylesheet" href="/static/components.css?v=20260826" />
+    <link rel="stylesheet" href="/static/listen.css?v=20260826" />
+    <script src="/static/theme.js?v=20260826"></script>
+    <script src="/static/auth.js"></script>
   </head>
   <body>
     <div class="lp" id="lpRoot">
 
       <!-- ── Top bar ── -->
       <header class="lp-top">
-        <button class="lp-icon" id="lpBackBtn" aria-label="返回">←</button>
+        <button class="lp-icon" id="lpBackBtn" aria-label="返回"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="m15 18-6-6 6-6"/></svg></button>
         <div class="lp-title-wrap">
           <div class="lp-title" id="lpTitle">加载中…</div>
           <div class="lp-sub" id="lpSub"></div>
         </div>
-        <button class="lp-icon" id="lpRegenBtn" aria-label="重新生成" title="重新解析并生成整篇音频">↻</button>
-        <button class="lp-icon" id="lpThemeBtn" aria-label="切换主题" title="切换主题">◐</button>
-        <button class="lp-icon" id="lpFullscreenBtn" aria-label="全屏" title="全屏">⛶</button>
+        <button class="lp-icon" id="lpRegenBtn" aria-label="重新生成" title="重新解析并生成整篇音频"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M20 11.5A8.5 8.5 0 1 1 11.5 3"/><path d="M20 4v5h-5"/></svg></button>
+        <button class="lp-icon" id="lpFullscreenBtn" aria-label="全屏" title="全屏"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg></button>
       </header>
 
       <!-- ── Article pane (left) ── -->
@@ -82,15 +84,15 @@
           </div>
         </div>
         <div class="lp-ctrl-row">
-          <button class="lp-ctrl" id="lpPrevBtn"   aria-label="上一句" disabled>⏮</button>
-          <button class="lp-ctrl" id="lpRepeatBtn" aria-label="复读"   disabled>↺</button>
-          <button class="lp-ctrl lp-play" id="lpPlayBtn" aria-label="播放/暂停" disabled>▶</button>
-          <button class="lp-ctrl" id="lpNextBtn"   aria-label="下一句" disabled>⏭</button>
+          <button class="lp-ctrl" id="lpPrevBtn" aria-label="上一句" disabled><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5h2.2v14H7zM19 5v14l-9-7z"/></svg></button>
+          <button class="lp-ctrl" id="lpRepeatBtn" aria-label="复读" disabled><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 8"/><path d="M20 4v4h-4"/></svg></button>
+          <button class="lp-ctrl lp-play" id="lpPlayBtn" aria-label="播放/暂停" disabled><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg></button>
+          <button class="lp-ctrl" id="lpNextBtn" aria-label="下一句" disabled><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M17 5h-2.2v14H17zM5 5v14l9-7z"/></svg></button>
           <button class="lp-ctrl lp-rate" id="lpRateBtn" aria-label="切换速度">1.0x</button>
         </div>
       </footer>
 
     </div>
-    <script src="/static/listen.js?v=20260522-v9"></script>
+    <script src="/static/listen.js?v=20260826"></script>
   </body>
 </html>

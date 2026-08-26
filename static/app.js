@@ -9,13 +9,14 @@ const STEPS = [
 ];
 
 const TWEAK_KEY = "english-lab-tweaks-v1";
-const TWEAK_DEFAULTS = { theme: "", density: "normal", readerSize: 18, showSide: true, showRail: true };
+const TWEAK_DEFAULTS = { density: "normal", readerSize: 18, showSide: true, showRail: true };
 
 const state = {
   library: { sources: [] },
   summary: {},
   config: {},
   settings: {},
+  appPasswords: [],
   vocabulary: [],
   outputs: [],
   progress: {},
@@ -160,6 +161,8 @@ function normalizeDictationItems(value) {
 function loadTweaks() {
   try {
     const saved = JSON.parse(localStorage.getItem(TWEAK_KEY) || "{}");
+    if (typeof saved.theme === "string" && !localStorage.getItem("el_theme")) window.ELTheme?.apply(saved.theme);
+    delete saved.theme;
     state.ui = { ...TWEAK_DEFAULTS, ...saved };
   } catch { state.ui = { ...TWEAK_DEFAULTS }; }
   applyTweaks();
@@ -190,7 +193,6 @@ function saveCollapseState() {
 
 function applyTweaks() {
   const root = document.documentElement;
-  root.dataset.theme = state.ui.theme || "";
   root.style.setProperty("--reader-size", state.ui.readerSize + "px");
   root.style.setProperty(
     "--reader-leading",
@@ -205,7 +207,7 @@ function applyTweaks() {
 
 function syncTweaksUI() {
   document.querySelectorAll("#themeGroup button").forEach((b) =>
-    b.setAttribute("aria-pressed", String((b.dataset.theme || "") === (state.ui.theme || "")))
+    b.setAttribute("aria-pressed", String((b.dataset.theme || "") === (window.ELTheme?.current() || "")))
   );
   document.querySelectorAll("#densityGroup button").forEach((b) =>
     b.setAttribute("aria-pressed", String(b.dataset.density === state.ui.density))
@@ -215,8 +217,9 @@ function syncTweaksUI() {
   const label = $("readerSizeLabel");
   if (label) label.textContent = state.ui.readerSize + "px";
   const railToggle = $("toggleRailBtn");
-  if (railToggle) railToggle.textContent = state.ui.showRail ? "▭ 隐藏 AI" : "▭ 显示 AI";
+  if (railToggle) railToggle.textContent = state.ui.showRail ? "隐藏 AI" : "显示 AI";
 }
+window.addEventListener("el:theme", syncTweaksUI);
 
 // ───────── Boot ─────────
 function showLibrarySkeleton() {
@@ -271,6 +274,7 @@ async function loadSecondaryData() {
   renderSidebar();
   renderLibraryView();
   fillSettingsForm();
+  await loadRemoteAccess();
   const pageParams = new URLSearchParams(location.search);
   if (pageParams.get("first_setup") === "1") {
     $("firstSetupNotice").hidden = false;
@@ -351,7 +355,7 @@ function renderSidebar() {
             <div class="art-title">${escapeHtml(article.title)}</div>
             <div class="art-meta">${escapeHtml(diff)} · ${formatNumber(words)} w · ${escapeHtml(updated)}</div>
           </div>
-          ${article.favorite ? `<span class="art-meta" title="已收藏">★</span>` : ""}
+          ${article.favorite ? `<span class="art-meta" title="已收藏">已收藏</span>` : ""}
         </div>`;
       }).join("");
 
@@ -604,7 +608,7 @@ function renderArticleHeader() {
     ${topic ? `<span class="tag topic">${escapeHtml(topic)}</span>` : ""}
     <span class="tag mono">${formatNumber(words)} w · ${minutes}′</span>
   `;
-  $("favoriteBtn").innerHTML = a.favorite ? "★ 已收藏" : "☆ 收藏";
+  $("favoriteBtn").textContent = a.favorite ? "已收藏" : "收藏";
   renderCrumbs();
 }
 
@@ -790,7 +794,7 @@ function renderVocabBoard(container) {
       <div class="ai-card-h"><span class="label">词汇掌握</span></div>
       <div class="ai-card-b">
         <p>AI 将筛选真正值得学习的词，并按核心必会词、阅读理解词、写作可用词、学术表达词、熟词僻义词分层。</p>
-        <button class="btn primary" id="runVocabBtn" style="margin-top: 8px;">⚡ 生成 AI 词汇分析</button>
+        <button class="btn primary" id="runVocabBtn" style="margin-top: 8px;">生成 AI 词汇分析</button>
       </div>
     </div>`;
     return;
@@ -843,7 +847,7 @@ function renderReadingBoard(container) {
       <div class="ai-card-h"><span class="label">阅读答题</span></div>
       <div class="ai-card-b">
         <p>AI 会基于文章生成英文阅读理解输出题，要求用英文作答。提交后给出评分、问题分析、优化答案与参考答案。</p>
-        <button class="btn primary" id="runReadingQuestionsBtn" style="margin-top: 8px;">⚡ 生成阅读理解题</button>
+        <button class="btn primary" id="runReadingQuestionsBtn" style="margin-top: 8px;">生成阅读理解题</button>
       </div>
     </div>`;
     return;
@@ -900,7 +904,7 @@ function renderDictBoard(container) {
       <div class="ai-card-h"><span class="label">听写跟读</span></div>
       <div class="ai-card-b">
         <p>系统从正文独立筛选 8–28 词的训练句。建议四轮：整体 → 逐句 → 纠错 → 跟读。</p>
-        <button class="btn primary" id="prepareDictationBtn" style="margin-top: 8px;">⚡ 生成听写跟读材料</button>
+        <button class="btn primary" id="prepareDictationBtn" style="margin-top: 8px;">生成听写跟读材料</button>
       </div>
     </div>`;
     return;
@@ -1191,7 +1195,7 @@ function renderRailContext() {
       <div class="ai-card-b">
         <div class="quote">${escapeHtml(state.activeSentenceText)}</div>
         <div class="row-flex">
-          <button class="btn primary" id="analyzeSelectedSentenceBtn">⚡ AI 分析句子</button>
+          <button class="btn primary" id="analyzeSelectedSentenceBtn">AI 分析句子</button>
           <button class="btn" data-say="${escapeHtml(state.activeSentenceText)}">♪ 朗读</button>
         </div>
       </div>
@@ -1231,7 +1235,7 @@ function renderRailLong() {
       <div class="ai-card-h"><span class="label">长难句</span></div>
       <div class="ai-card-b">
         <p>系统会从文章中筛选最值得精读的长难句。</p>
-        <button class="btn primary" id="runLongSentenceBtn" style="margin-top: 8px; width: 100%; justify-content: center;">⚡ 生成长难句解析</button>
+        <button class="btn primary" id="runLongSentenceBtn" style="margin-top: 8px; width: 100%; justify-content: center;">生成长难句解析</button>
       </div>
     </div>`;
   }
@@ -1267,7 +1271,7 @@ function renderRailVocab() {
       <div class="ai-card-h"><span class="label">词汇</span></div>
       <div class="ai-card-b">
         <p>AI 会按分层（核心 / 阅读理解 / 写作可用 / 学术 / 熟词僻义）筛选词条。</p>
-        <button class="btn primary" id="runVocabBtn" style="margin-top: 8px; width: 100%; justify-content: center;">⚡ 生成词汇分析</button>
+        <button class="btn primary" id="runVocabBtn" style="margin-top: 8px; width: 100%; justify-content: center;">生成词汇分析</button>
       </div>
     </div>`;
   }
@@ -1304,7 +1308,7 @@ function renderRailReading() {
       <div class="ai-card-h"><span class="label">阅读答题</span></div>
       <div class="ai-card-b">
         <p>AI 基于文章生成 5 道英文阅读理解题，要求英文作答，提交后获得评分和分析。</p>
-        <button class="btn primary" id="runReadingQuestionsBtn" style="margin-top: 8px; width: 100%; justify-content: center;">⚡ 生成阅读理解题</button>
+        <button class="btn primary" id="runReadingQuestionsBtn" style="margin-top: 8px; width: 100%; justify-content: center;">生成阅读理解题</button>
       </div>
     </div>`;
   }
@@ -1349,7 +1353,7 @@ function renderRailDict() {
       <div class="ai-card-h"><span class="label">听写跟读</span></div>
       <div class="ai-card-b">
         <p>系统从正文筛选 8–28 词的训练句。建议四轮：整体 → 逐句 → 纠错 → 跟读。</p>
-        <button class="btn primary" id="prepareDictationBtn" style="margin-top: 8px; width: 100%; justify-content: center;">⚡ 生成听写跟读材料</button>
+        <button class="btn primary" id="prepareDictationBtn" style="margin-top: 8px; width: 100%; justify-content: center;">生成听写跟读材料</button>
       </div>
     </div>`;
   }
@@ -1663,6 +1667,53 @@ function settingsPayload() {
   };
 }
 
+function remoteAccessUrl(path = "/dav/") {
+  return new URL(path, window.location.origin).href;
+}
+
+function renderAppPasswords() {
+  const list = $("appPasswordList");
+  if (!list) return;
+  const items = asArray(state.appPasswords);
+  list.innerHTML = items.length
+    ? items.map((item) => `
+      <div class="app-password-item">
+        <div><strong>${escapeHtml(item.label)}</strong><span>${item.revoked_at ? "已吊销" : `创建于 ${escapeHtml(timeAgo(item.created_at))}`}</span></div>
+        ${item.revoked_at ? "" : `<button class="btn danger" data-revoke-app-password="${escapeHtml(item.id)}" type="button">吊销</button>`}
+      </div>`).join("")
+    : '<p class="status-text">还没有应用密码。每台手机建议单独创建一个，丢失时可独立吊销。</p>';
+}
+
+async function loadRemoteAccess() {
+  if (!$("davUrlInput")) return;
+  try {
+    const data = await api("/api/v1/app-passwords");
+    state.appPasswords = data.items || [];
+    const enabled = Boolean(data.enabled);
+    $("davUrlInput").value = remoteAccessUrl(data.path || "/dav/");
+    $("davStatusBadge").textContent = enabled ? "HTTPS 已启用" : "需要 HTTPS";
+    $("davStatusBadge").classList.toggle("ok", enabled);
+    $("createAppPasswordBtn").disabled = !enabled;
+    $("appPasswordLabel").disabled = !enabled;
+    $("davHelpText").textContent = enabled
+      ? "在手机播放器中选择 WebDAV，填入地址、管理员用户名和生成的应用密码。"
+      : "请先使用域名和 HTTPS 部署；系统不会在明文 HTTP 下签发应用密码。";
+    $("davQrImage").hidden = !enabled;
+    if (enabled) $("davQrImage").src = `/api/v1/app-passwords/qr?t=${Date.now()}`;
+    renderAppPasswords();
+  } catch (error) {
+    $("davHelpText").textContent = error.message;
+  }
+}
+
+async function copyText(value, button) {
+  await navigator.clipboard.writeText(value);
+  if (!button) return;
+  const old = button.textContent;
+  button.textContent = "已复制";
+  window.setTimeout(() => { button.textContent = old; }, 1200);
+}
+
 function renderProviderTestResult(data) {
   const meta = data.meta || {};
   if (meta.used_ai) return `连接成功：${meta.model} @ ${meta.base_url}`;
@@ -1724,7 +1775,7 @@ document.addEventListener("click", async (event) => {
   const targetEl = rawTarget instanceof Element ? rawTarget : rawTarget?.parentElement;
   if (!targetEl) return;
   const target = targetEl.closest(
-    "button, [data-open-article], [data-open-book], [data-step], [data-tab], [data-list], [data-diff], .sent, [data-say], [data-add-vocab], [data-vocab-imitate], [data-grade-reading], [data-dictation-feedback], [data-toggle-source], [data-collapse-section], [data-go], [data-density], [data-size], [data-theme], [data-round], [data-speed], [data-play-dict], [data-delete-source], .crumb-link"
+    "button, [data-open-article], [data-open-book], [data-step], [data-tab], [data-list], [data-diff], .sent, [data-say], [data-add-vocab], [data-vocab-imitate], [data-grade-reading], [data-dictation-feedback], [data-toggle-source], [data-collapse-section], [data-go], [data-density], [data-size], [data-theme], [data-round], [data-speed], [data-play-dict], [data-delete-source], [data-revoke-app-password], .crumb-link"
   ) || targetEl;
 
   // Sidebar list switch
@@ -1803,8 +1854,7 @@ document.addEventListener("click", async (event) => {
     return;
   }
   if (target.matches("[data-theme]")) {
-    state.ui.theme = target.dataset.theme || "";
-    saveTweaks();
+    window.ELTheme?.apply(target.dataset.theme || "");
     applyTweaks();
     return;
   }
@@ -1837,9 +1887,45 @@ document.addEventListener("click", async (event) => {
   if (target.id === "kbdHelpBtn") { $("kbdDialog").showModal(); return; }
   if (target.id === "closeKbdBtn") { $("kbdDialog").close(); return; }
   if (target.id === "openSettingsBtn") { $("settingsDialog").showModal(); return; }
+  if (target.id === "globalSettingsBtn") { $("settingsDialog").showModal(); return; }
   if (target.id === "closeSettingsBtn") { $("settingsDialog").close(); return; }
   if (target.id === "saveSettingsBtn") { saveTweaks(); applyTweaks(); $("settingsDialog").close(); return; }
   if (target.id === "audioLibraryBtn") { window.location.href = "/media"; return; }
+  if (target.id === "copyDavUrlBtn") {
+    try { await copyText($("davUrlInput").value, target); } catch { alert("复制失败，请手动选择地址复制。"); }
+    return;
+  }
+  if (target.id === "copyDavCredentialsBtn") {
+    try {
+      await copyText(`地址：${$("davUrlInput").value}\n用户名：${$("davUsername").textContent}\n应用密码：${$("davPassword").textContent}`, target);
+    } catch { alert("复制失败，请手动选择账号信息复制。"); }
+    return;
+  }
+  if (target.id === "createAppPasswordBtn") {
+    const label = $("appPasswordLabel").value.trim();
+    if (!label) { $("appPasswordLabel").focus(); return; }
+    await runAction(target, "生成中…", async () => {
+      const data = await api("/api/v1/app-passwords", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label }),
+      });
+      $("davUsername").textContent = data.username;
+      $("davPassword").textContent = data.password;
+      $("appPasswordReveal").hidden = false;
+      $("appPasswordLabel").value = "";
+      await loadRemoteAccess();
+    });
+    return;
+  }
+  if (target.matches("[data-revoke-app-password]")) {
+    if (!confirm("吊销后，这台设备将立即无法访问音频库。继续吗？")) return;
+    await runAction(target, "吊销中…", async () => {
+      await api(`/api/v1/app-passwords/${target.dataset.revokeAppPassword}`, { method: "DELETE" });
+      await loadRemoteAccess();
+    });
+    return;
+  }
   if (target.id === "saveAllSettingsBtn") {
     await runAction(target, "保存中…", async () => {
       state.settings = await api("/api/settings", {

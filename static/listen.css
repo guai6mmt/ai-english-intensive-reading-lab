@@ -5,32 +5,12 @@
 :root {
   --serif: "Source Serif 4", "Source Serif Pro", Georgia, serif;
   --sans:  "Inter", system-ui, -apple-system, "PingFang SC", sans-serif;
-}
-
-[data-theme="dark"] {
-  --bg:          #0f1115;
-  --bg-elev:     #161a22;
-  --bg-soft:     #1d222c;
-  --fg:          #e8ecf3;
-  --fg-soft:     #a5adbb;
-  --fg-mute:     #6c7484;
-  --accent:      #ffd166;
-  --accent-soft: rgba(255, 209, 102, 0.15);
-  --line:        rgba(255, 255, 255, 0.08);
-  --read:        rgba(232, 236, 243, 0.28);
-}
-
-[data-theme="light"] {
-  --bg:          #fbf8f1;
-  --bg-elev:     #ffffff;
-  --bg-soft:     #f1ece0;
-  --fg:          #1a1a1a;
-  --fg-soft:     #555;
-  --fg-mute:     #888;
-  --accent:      #c9601a;
-  --accent-soft: rgba(201, 96, 26, 0.12);
-  --line:        rgba(0, 0, 0, 0.08);
-  --read:        rgba(26, 26, 26, 0.32);
+  --bg-elev: var(--paper);
+  --bg-soft: var(--panel);
+  --fg: var(--ink);
+  --fg-soft: var(--ink-2);
+  --fg-mute: var(--muted);
+  --read: var(--muted);
 }
 
 * { box-sizing: border-box; }
@@ -89,8 +69,8 @@ button { font: inherit; color: inherit; border: none; background: transparent; c
   min-height: 14px;
 }
 .lp-icon {
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   border-radius: 8px;
   font-size: 18px;
   display: inline-flex;
@@ -110,32 +90,32 @@ button { font: inherit; color: inherit; border: none; background: transparent; c
   margin-bottom: 10px;
   font-size: 12px;
 }
-.lp-source-label { color: var(--ink-2, #8b93a1); margin-right: 2px; }
+.lp-source-label { color: var(--ink-2); margin-right: 2px; }
 .lp-src-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 4px 10px;
   border-radius: 999px;
-  border: 1px solid var(--border, #2a2f3a);
+  border: 1px solid var(--line);
   background: transparent;
   color: inherit;
   cursor: pointer;
   line-height: 1.4;
 }
-.lp-src-pill:hover { background: var(--bg-soft, rgba(255,255,255,0.05)); }
-.lp-src-pill.active { border-color: var(--accent, #6aa3ff); color: var(--accent, #6aa3ff); }
+.lp-src-pill:hover { background: var(--bg-soft); }
+.lp-src-pill.active { border-color: var(--accent); color: var(--accent); }
 .lp-src-pill .lp-src-dot {
   width: 6px; height: 6px; border-radius: 50%;
-  background: var(--ink-3, #555c6b);
+  background: var(--muted);
 }
-.lp-src-pill.cached .lp-src-dot { background: #3fbf7f; }
+.lp-src-pill.cached .lp-src-dot { background: var(--good); }
 .lp-src-pill[disabled] { opacity: 0.45; cursor: not-allowed; }
 .lp-video-export-btn {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  border: 1px solid var(--border, #2a2f3a);
+  border: 1px solid var(--line);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -144,7 +124,7 @@ button { font: inherit; color: inherit; border: none; background: transparent; c
   line-height: 1;
   font-size: 15px;
 }
-.lp-video-export-btn:hover:not(:disabled) { background: var(--bg-soft, rgba(255,255,255,0.05)); }
+.lp-video-export-btn:hover:not(:disabled) { background: var(--bg-soft); }
 .lp-video-export-btn:active:not(:disabled) { transform: scale(0.92); }
 .lp-video-export-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
@@ -303,12 +283,12 @@ button { font: inherit; color: inherit; border: none; background: transparent; c
 }
 .lp-prepare[hidden] { display: none; }
 .lp-prepare.failed {
-  border-color: rgba(220, 80, 80, 0.45);
-  background: rgba(220, 80, 80, 0.08);
+  border-color: var(--error);
+  background: var(--error-soft);
 }
 .lp-prepare.done {
-  border-color: rgba(80, 180, 120, 0.45);
-  background: rgba(80, 180, 120, 0.08);
+  border-color: var(--good);
+  background: var(--good-soft);
 }
 .lp-prepare-head {
   display: flex;
@@ -344,8 +324,8 @@ button { font: inherit; color: inherit; border: none; background: transparent; c
   background: var(--accent);
   transition: right 0.4s ease;
 }
-.lp-prepare.failed .lp-prepare-fill { background: rgba(220, 80, 80, 0.7); }
-.lp-prepare.done .lp-prepare-fill   { background: rgba(80, 180, 120, 0.75); }
+.lp-prepare.failed .lp-prepare-fill { background: var(--error); }
+.lp-prepare.done .lp-prepare-fill   { background: var(--good); }
 .lp-prepare-msg {
   margin-top: 6px;
   font-size: 11px;
@@ -404,10 +384,12 @@ button { font: inherit; color: inherit; border: none; background: transparent; c
 .lp-ctrl:disabled { opacity: 0.3; cursor: not-allowed; }
 
 .lp-ctrl.lp-play {
-  min-width: 80px;
-  height: 54px;
+  min-width: 58px;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
   background: var(--accent);
-  color: #1a1a1a;
+  color: var(--dock-key-ink);
   border: none;
   font-size: 20px;
   font-weight: 700;
@@ -437,8 +419,8 @@ button { font: inherit; color: inherit; border: none; background: transparent; c
   .lp-article  { padding: 16px 18px 24px; }
   .lp-para     { font-size: 18px; line-height: 1.8; }
   .lp-title    { font-size: 14px; }
-  .lp-ctrl     { min-width: 46px; height: 42px; font-size: 16px; border-radius: 10px; }
-  .lp-ctrl.lp-play { min-width: 68px; height: 50px; font-size: 18px; }
+  .lp-ctrl     { min-width: 44px; height: 44px; font-size: 16px; border-radius: 10px; }
+  .lp-ctrl.lp-play { min-width: 58px; width:58px; height:58px; font-size: 18px; }
   .lp-video-export-btn { display: none; }
 }
 
@@ -450,9 +432,9 @@ button { font: inherit; color: inherit; border: none; background: transparent; c
 @media (orientation: portrait) and (max-width: 360px) {
   .lp-controls { padding-left: 10px; padding-right: 10px; }
   .lp-ctrl-row { gap: 6px; }
-  .lp-ctrl     { min-width: 40px; height: 40px; padding: 0 6px; font-size: 15px; }
-  .lp-ctrl.lp-play { min-width: 56px; height: 46px; font-size: 16px; }
-  .lp-ctrl.lp-rate { min-width: 40px; padding: 0 4px; }
+  .lp-ctrl     { min-width: 44px; height: 44px; padding: 0 6px; font-size: 15px; }
+  .lp-ctrl.lp-play { min-width: 58px; width:58px; height:58px; font-size: 16px; }
+  .lp-ctrl.lp-rate { min-width: 44px; padding: 0 4px; }
 }
 
 /* ── Mobile landscape — subway sweet spot ── */
@@ -463,7 +445,7 @@ button { font: inherit; color: inherit; border: none; background: transparent; c
   }
   .lp-title { font-size: 14px; }
   .lp-sub   { display: none; }
-  .lp-icon  { width: 30px; height: 30px; font-size: 16px; }
+  .lp-icon  { width: 44px; height: 44px; font-size: 16px; }
   .lp-article { padding: 12px clamp(14px, 4vw, 28px) 20px; }
   .lp-para    { font-size: 16px; line-height: 1.7; }
   .lp-vocab-head { padding: 7px 12px 6px; font-size: 10px; }
@@ -472,8 +454,8 @@ button { font: inherit; color: inherit; border: none; background: transparent; c
   .lp-vocab-meaning { font-size: 13px; }
   .lp-controls { padding: 5px 12px; padding-bottom: max(5px, env(safe-area-inset-bottom)); }
   .lp-progress-wrap { margin-bottom: 4px; }
-  .lp-ctrl { min-width: 48px; height: 38px; font-size: 15px; border-radius: 9px; }
-  .lp-ctrl.lp-play { min-width: 66px; height: 44px; font-size: 17px; }
+  .lp-ctrl { min-width: 44px; height: 44px; font-size: 15px; border-radius: 9px; }
+  .lp-ctrl.lp-play { min-width: 58px; width:58px; height:58px; font-size: 17px; }
 }
 
 /* ── Desktop ── */

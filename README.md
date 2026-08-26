@@ -29,6 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/guai6mmt/ai-english-intensive-readi
 | 移动播放 | 响应式播放器、前后 15 秒、倍速、A-B 循环、锁屏控制和后台播放 |
 | 流媒体 | 登录后私有访问，支持 HTTP Range，可拖动进度且无需完整下载 |
 | PWA | 手机浏览器可“添加到主屏幕”，以接近原生应用的方式打开 |
+| 第三方播放器 | 通过只读 WebDAV 在支持该协议的手机 App 中浏览和播放服务器音频 |
 
 ### 英语精读学习
 
@@ -49,6 +50,8 @@ curl -fsSL https://raw.githubusercontent.com/guai6mmt/ai-english-intensive-readi
 - 所有文章、设置和音频接口均受登录会话保护。
 - 使用 HttpOnly、SameSite Cookie 和 CSRF 校验；公网部署自动启用 Secure Cookie。
 - SQLite WAL 保存用户、媒体、收藏、进度、书签和导入任务。
+- API Key 等敏感网页配置使用服务器本地密钥加密后落盘，应用密码只保存 Argon2 哈希。
+- WebDAV 仅在 HTTPS 下启用、只允许读取，并可为每台手机单独生成和吊销应用密码。
 - 服务以非 root 用户运行，只监听 `127.0.0.1`，由 Caddy 提供 HTTPS。
 - 提供存活与就绪健康检查、自动重启和更新前数据库备份。
 
@@ -66,6 +69,17 @@ curl -fsSL https://raw.githubusercontent.com/guai6mmt/ai-english-intensive-readi
 - `/`：英语精读工作台
 - `/media`：音频资料库与手机播放器
 - `/login`：登录或首次创建管理员
+
+## 在手机播放器中连接音频库
+
+一键 HTTPS 部署完成后，在文章库打开“设置 → 手机远程访问”：
+
+1. 输入设备名称，例如“我的 iPhone”，点击“生成应用密码”；
+2. 立即复制服务器地址、管理员用户名和一次性显示的应用密码；
+3. 在手机播放器中新增 WebDAV 服务器，粘贴这三项信息；
+4. 在播放器中按资料分类浏览和练习音频。
+
+远程入口是只读的：手机播放器不能修改或删除服务器内容。建议每台设备使用不同的应用密码；手机丢失时，只需在网页中吊销对应密码，不必修改管理员登录密码。为避免账号在网络中明文传输，HTTP 本地运行不会启用此功能。
 
 ## Linux 服务器一键部署（推荐）
 
@@ -188,6 +202,7 @@ bash scripts/mac_start.sh
 - 配置阿里云 OSS 音频中转；
 - 配置 MiniMax TTS、声音、语速和模型；
 - 调整阅读主题、字号与行距。
+- 生成手机 WebDAV 应用密码、扫码复制地址，以及查看或吊销已授权设备。
 
 保存的密钥不会在页面中明文回显。音频上传、整理和普通播放可以完全不配置 AI 服务。
 

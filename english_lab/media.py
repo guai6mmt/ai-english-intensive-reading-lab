@@ -23,6 +23,7 @@ from .database import connect, transaction, utc_now
 
 
 router = APIRouter(prefix="/api/v1/media", tags=["media"])
+_SCAN_CREATE_LOCK = threading.Lock()
 
 SUPPORTED_AUDIO_EXTENSIONS = {
     ".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus", ".m4b",
@@ -254,11 +255,23 @@ def _record_job_item(job_id: str, relative_path: str, status: str, media_id: str
         "failed": "failed_files",
     }.get(status)
     with transaction() as connection:
-        connection.execute(
-            """INSERT INTO import_job_items(id, job_id, relative_path, status, media_id, message, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (uuid.uuid4().hex, job_id, relative_path, status, media_id, message[:1000], utc_now()),
-        )
+        existing = connection.execute(
+            """SELECT id FROM import_job_items
+               WHERE job_id = ? AND relative_path = ? AND status = 'pending'
+               ORDER BY created_at LIMIT 1""",
+            (job_id, relative_path),
+        ).fetchone()
+        if existing:
+            connection.execute(
+                """UPDATE import_job_items SET status = ?, media_id = ?, message = ? WHERE id = ?""",
+                (status, media_id, message[:1000], existing["id"]),
+            )
+        else:
+            connection.execute(
+                """INSERT INTO import_job_items(id, job_id, relative_path, status, media_id, message, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (uuid.uuid4().hex, job_id, relative_path, status, media_id, message[:1000], utc_now()),
+            )
         if counter:
             connection.execute(
                 f"""UPDATE import_jobs
@@ -691,7 +704,22 @@ def scan_server_directory(spec: ServerScanRequest, request: Request) -> dict[str
         if path.is_file() and not path.is_symlink() and path.suffix.lower() in SUPPORTED_AUDIO_EXTENSIONS
         and path.resolve().is_relative_to(config.import_root)
     ]
-    job_id = _create_job(user["id"], "server_scan", str(relative), len(files))
-    worker = threading.Thread(target=_run_server_scan, args=(job_id, root, files), daemon=True)
-    worker.start()
+    with _SCAN_CREATE_LOCK:
+        with connect() as connection:
+            active = connection.execute(
+                """SELECT id FROM import_jobs
+                   WHERE kind = 'server_scan' AND status IN ('pending', 'running') LIMIT 1"""
+            ).fetchone()
+        if active:
+            raise HTTPException(409, "已有服务器扫描任务正在运行，请等待它完成。")
+        job_id = _create_job(user["id"], "server_scan", str(relative), len(files))
+        now = utc_now()
+        with transaction() as connection:
+            connection.executemany(
+                """INSERT INTO import_job_items(id, job_id, relative_path, status, media_id, message, created_at)
+                   VALUES (?, ?, ?, 'pending', NULL, '', ?)""",
+                [(uuid.uuid4().hex, job_id, path.relative_to(config.import_root).as_posix(), now) for path in files],
+            )
+        worker = threading.Thread(target=_run_server_scan, args=(job_id, root, files), daemon=True)
+        worker.start()
     return {"job_id": job_id, "total_files": len(files)}

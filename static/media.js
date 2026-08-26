@@ -16,6 +16,17 @@ const state = {
   total: 0,
   loopA: null,
   loopB: null,
+  restoredPlayback: false,
+};
+
+const PLAYBACK_KEY = "el_media_playback_v1";
+const svg = (path, fill = "none") => `<svg width="20" height="20" viewBox="0 0 24 24" fill="${fill}" stroke="${fill === "none" ? "currentColor" : "none"}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
+const ICONS = {
+  play: svg('<path d="M8 5.5v13l11-6.5z"/>', "currentColor"),
+  pause: svg('<rect x="7" y="5" width="3.4" height="14" rx="1"/><rect x="13.6" y="5" width="3.4" height="14" rx="1"/>', "currentColor"),
+  star: svg('<path d="m12 4 2.3 5.1 5.7.6-4.2 3.8 1.2 5.5L12 16.3 7 19l1.2-5.5L4 9.7l5.7-.6z"/>'),
+  more: svg('<circle cx="12" cy="5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="19" r="1.4"/>'),
+  trash: svg('<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/>'),
 };
 
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
@@ -52,9 +63,7 @@ function showNotice(message, error = false) {
   const box = $("notice");
   box.hidden = !message;
   box.textContent = message || "";
-  box.style.background = error ? "#fff0ec" : "";
-  box.style.borderColor = error ? "#e5b5aa" : "";
-  box.style.color = error ? "#943d30" : "";
+  box.classList.toggle("is-error", Boolean(error));
 }
 
 async function loadData(append = false) {
@@ -75,6 +84,7 @@ async function loadData(append = false) {
     renderCollections();
     renderItems();
     renderStats(status, library.total || 0);
+    restorePlayback();
   } catch (error) {
     showNotice(error.message, true);
   }
@@ -107,14 +117,14 @@ function renderItems() {
     const tags = (item.tags || []).slice(0, 3).map((tag) => `<span>${esc(tag)}</span>`).join("");
     const duration = item.duration_ms ? formatTime(item.duration_ms / 1000) : "--:--";
     const progress = item.duration_ms ? Math.min(100, Math.round((item.position_ms || 0) / item.duration_ms * 100)) : 0;
-    return `<article class="media-row" data-id="${esc(item.id)}">
-      <button class="track-icon" data-play="${esc(item.id)}" aria-label="播放">${state.current?.id === item.id && !audio.paused ? "❚❚" : "▶"}</button>
+    return `<article class="media-row" data-id="${esc(item.id)}" data-playing="${state.current?.id === item.id && !audio.paused}">
+      <button class="track-icon" data-play="${esc(item.id)}" aria-label="播放">${state.current?.id === item.id && !audio.paused ? ICONS.pause : ICONS.play}</button>
       <div class="track-main" data-play="${esc(item.id)}"><strong>${esc(item.title)}</strong><small>${esc(item.collection_name || item.relative_path || item.original_name)}${progress ? ` · 已听 ${progress}%` : ""}</small></div>
       <div class="track-tags">${item.difficulty ? `<span>${esc(item.difficulty)}</span>` : ""}${tags}</div>
       <div class="track-meta">${duration} · ${formatBytes(item.file_size)}</div>
       <div class="row-actions">
-        <button data-favorite="${esc(item.id)}" title="收藏">${item.favorite ? "★" : "☆"}</button>
-        ${state.deleted ? `<button data-restore="${esc(item.id)}" title="恢复">↶</button>` : `<button data-edit="${esc(item.id)}" title="编辑">⋯</button><button data-delete="${esc(item.id)}" title="移入回收站">×</button>`}
+        <button data-favorite="${esc(item.id)}" title="收藏" class="${item.favorite ? "is-favorite" : ""}">${ICONS.star}</button>
+        ${state.deleted ? `<button data-restore="${esc(item.id)}" title="恢复">恢复</button>` : `<button data-edit="${esc(item.id)}" title="编辑">${ICONS.more}</button><button data-delete="${esc(item.id)}" title="移入回收站">${ICONS.trash}</button>`}
       </div>
     </article>`;
   }).join("");
@@ -160,12 +170,37 @@ function updatePlayer() {
   $("playerBar").dataset.open = Boolean(item);
   $("nowTitle").textContent = item?.title || "选择一条音频开始练习";
   $("nowMeta").textContent = item ? (item.collection_name || item.relative_path || item.original_name) : "—";
-  $("playBtn").textContent = item && !audio.paused ? "❚❚" : "▶";
-  $("favoriteBtn").textContent = item?.favorite ? "★" : "☆";
+  $("playBtn").innerHTML = item && !audio.paused ? ICONS.pause : ICONS.play;
+  $("favoriteBtn").innerHTML = ICONS.star;
+  $("favoriteBtn").classList.toggle("is-favorite", Boolean(item?.favorite));
   $("abBtn").textContent = state.loopA === null ? "A–B" : state.loopB === null ? `A ${formatTime(state.loopA)}` : "A↔B";
   $("currentTime").textContent = formatTime(audio.currentTime);
   $("duration").textContent = formatTime(audio.duration);
   $("seek").value = Number.isFinite(audio.duration) && audio.duration ? Math.round(audio.currentTime / audio.duration * 1000) : 0;
+}
+
+function persistPlayback() {
+  if (!state.current) return;
+  try {
+    sessionStorage.setItem(PLAYBACK_KEY, JSON.stringify({
+      id: state.current.id,
+      position: Math.round((audio.currentTime || 0) * 1000),
+      rate: audio.playbackRate || 1,
+    }));
+  } catch {}
+}
+
+function restorePlayback() {
+  if (state.restoredPlayback || state.current) return;
+  state.restoredPlayback = true;
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(PLAYBACK_KEY) || "null");
+    const item = saved && state.items.find((entry) => entry.id === saved.id);
+    if (!item) return;
+    item.position_ms = Number(saved.position || item.position_ms || 0);
+    item.playback_rate = Number(saved.rate || item.playback_rate || 1);
+    playItem(item.id, false);
+  } catch {}
 }
 
 async function saveProgress(completed = false) {
@@ -174,6 +209,7 @@ async function saveProgress(completed = false) {
   state.current.position_ms = Math.round(audio.currentTime * 1000);
   state.current.playback_rate = audio.playbackRate;
   state.current.completed = completed;
+  persistPlayback();
   try {
     await api(`/api/v1/media/items/${state.current.id}/progress`, {
       method: "PUT",
@@ -335,6 +371,7 @@ $("scanBtn").addEventListener("click", () => $("scanDialog").showModal());
 $("refreshBtn").addEventListener("click", () => loadData());
 $("loadMoreBtn").addEventListener("click", () => loadData(true));
 $("userBtn").addEventListener("click", () => window.EnglishLabAuth.logout());
+$("mediaThemeBtn").addEventListener("click", () => window.ELTheme?.cycle());
 $("folderInput").addEventListener("change", (event) => importFolder(event.target.files).catch((error) => showNotice(error.message, true)));
 $("searchInput").addEventListener("input", (event) => { clearTimeout(state.searchTimer); state.searchTimer = setTimeout(() => { state.query = event.target.value.trim(); loadData(); }, 250); });
 $("sortSelect").addEventListener("change", (event) => { state.sort = event.target.value; loadData(); });
@@ -386,9 +423,10 @@ audio.addEventListener("timeupdate", () => {
   if (state.loopA !== null && state.loopB !== null && audio.currentTime >= state.loopB) audio.currentTime = state.loopA;
   updatePlayer();
   if (Date.now() - state.lastProgressSave > 15000) saveProgress();
+  persistPlayback();
 });
 audio.addEventListener("ended", async () => { await saveProgress(true); moveTrack(1); });
-window.addEventListener("pagehide", () => saveProgress());
+window.addEventListener("pagehide", () => { persistPlayback(); saveProgress(); });
 
 if ("mediaSession" in navigator) {
   navigator.mediaSession.setActionHandler("play", () => audio.play());

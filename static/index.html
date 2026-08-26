@@ -1,23 +1,34 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="">
+<html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#f7f5ed" />
+    <meta name="theme-color" content="#f3f1ec" />
     <title>AI English Intensive Reading Lab</title>
     <link rel="icon" href="/static/icons/app-icon.svg" type="image/svg+xml" />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <script src="/static/auth.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=20260521-shelf" />
+    <link rel="stylesheet" href="/static/tokens.css?v=20260826" />
+    <link rel="stylesheet" href="/static/components.css?v=20260826" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260826" />
+    <script src="/static/theme.js?v=20260826"></script>
+    <script src="/static/auth.js"></script>
   </head>
   <body>
     <div class="app" id="appShell" data-sidebar="shown" data-rail="shown">
+      <nav class="global-rail" aria-label="主导航">
+        <a class="global-brand" href="/" aria-label="English Lab 首页">EL</a>
+        <a class="global-rail-item" href="/" aria-current="page" title="文章库"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h7a2 2 0 0 1 2 2v13a1.5 1.5 0 0 0-1.5-1.5H4z"/><path d="M20 5h-7a2 2 0 0 0-2 2v13a1.5 1.5 0 0 1 1.5-1.5H20z"/></svg><span>文章</span></a>
+        <a class="global-rail-item" href="/media" title="音频库"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg><span>音频</span></a>
+        <span class="global-rail-spacer"></span>
+        <button class="global-rail-item" data-cycle-theme title="切换主题"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg><span>主题</span></button>
+        <button class="global-rail-item" id="globalSettingsBtn" title="设置"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.2-1.7l2-1.5-2-3.4-2.5 1A7 7 0 0 0 13.7 5L13.3 2h-4l-.4 3a7 7 0 0 0-2.6 1.4l-2.5-1-2 3.4 2 1.5A7 7 0 0 0 4 12c0 .6.1 1.1.2 1.7l-2 1.5 2 3.4 2.5-1A7 7 0 0 0 9.3 19l.4 3h4l.4-3a7 7 0 0 0 2.6-1.4l2.5 1 2-3.4-2-1.5c.1-.6.2-1.1.2-1.7z"/></svg><span>设置</span></button>
+      </nav>
       <!-- ───────── Sidebar ───────── -->
       <aside class="side" id="sidebar">
         <div class="side-head">
@@ -28,13 +39,13 @@
           </div>
           <div class="side-head-actions">
             <input id="fileInput" type="file" accept=".epub,.docx,.txt" hidden />
-            <button class="icon-btn" id="uploadBtn" title="导入文章 EPUB / DOCX / TXT" aria-label="导入文章">↑</button>
-            <button class="icon-btn" id="collapseSideBtn" title="隐藏文章库" aria-label="隐藏文章库">◂</button>
+            <button class="icon-btn" id="uploadBtn" title="导入文章 EPUB / DOCX / TXT" aria-label="导入文章"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></button>
+            <button class="icon-btn" id="collapseSideBtn" title="隐藏文章库" aria-label="隐藏文章库"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="m15 6-6 6 6 6"/></svg></button>
           </div>
         </div>
 
         <div class="side-search">
-          <span class="search-ic">⌕</span>
+          <span class="search-ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></span>
           <input id="searchInput" placeholder="搜索标题、栏目、关键词…" />
         </div>
 
@@ -65,22 +76,22 @@
 
       <!-- ───────── Reopen tabs ───────── -->
       <button class="reopen left hidden" id="reopenSideBtn" title="展开文章库">▸ 文章库</button>
-      <button class="reopen right hidden" id="reopenRailBtn" title="展开 AI 面板">◂ AI 面板</button>
+      <button class="reopen right hidden" id="reopenRailBtn" title="展开 AI 面板">展开 AI 面板</button>
 
       <!-- ───────── Main ───────── -->
       <main class="main" id="main">
         <!-- Toolbar -->
         <div class="tool" id="toolbar">
-          <button class="btn ghost" id="toggleSideBtn" title="切换文章库" aria-label="切换文章库">☰</button>
+          <button class="btn ghost" id="toggleSideBtn" title="切换文章库" aria-label="切换文章库"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
           <div class="crumbs" id="crumbs">
             <span class="crumb-link" data-go="library">文章库</span>
           </div>
           <button class="btn ghost" id="kbdHelpBtn" title="键盘快捷键"><span class="kbd">?</span></button>
-          <button class="btn" id="audioLibraryBtn" title="打开服务器音频库">♫ 音频库</button>
-          <button class="btn" id="favoriteBtn" title="收藏文章" hidden>★ 收藏</button>
-          <button class="btn" id="batchAnalyzeBtn" title="一键执行所有 AI 分析" hidden>⚡ 一键分析</button>
-          <button class="btn" id="listenModeBtn" title="进入听力模式（地铁场景优化）" hidden>🎧 听力模式</button>
-          <button class="btn" id="toggleRailBtn" title="隐藏 / 显示 AI 教师面板" hidden>▭ 隐藏 AI</button>
+          <button class="btn" id="audioLibraryBtn" title="打开服务器音频库"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg>音频库</button>
+          <button class="btn" id="favoriteBtn" title="收藏文章" hidden>收藏</button>
+          <button class="btn" id="batchAnalyzeBtn" title="一键执行所有 AI 分析" hidden>一键分析</button>
+          <button class="btn" id="listenModeBtn" title="进入听力模式（地铁场景优化）" hidden><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 13v-1a8 8 0 0 1 16 0v1"/><rect x="2.5" y="13" width="4" height="7" rx="2"/><rect x="17.5" y="13" width="4" height="7" rx="2"/></svg>听力模式</button>
+          <button class="btn" id="toggleRailBtn" title="隐藏 / 显示 AI 教师面板" hidden>隐藏 AI</button>
         </div>
 
         <!-- ───────── Library view ───────── -->
@@ -95,11 +106,11 @@
           </div>
 
           <div class="lib-controls">
-            <button class="btn" data-view-mode="grid" aria-pressed="true">▦ 卡片</button>
-            <button class="btn" data-view-mode="list">☰ 列表</button>
+            <button class="btn" data-view-mode="grid" aria-pressed="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg>卡片</button>
+            <button class="btn" data-view-mode="list"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>列表</button>
             <span class="grow"></span>
             <span class="muted" id="uploadStatus" style="font-size: 12px;"></span>
-            <button class="btn" id="libUploadBtn">↑ 导入 EPUB / DOCX / TXT</button>
+            <button class="btn" id="libUploadBtn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>导入 EPUB / DOCX / TXT</button>
           </div>
 
           <div class="lib-grid" id="libGrid"></div>
@@ -337,6 +348,42 @@
           </section>
         </div>
 
+        <section class="tweaks-block remote-access" style="margin-top: 14px;">
+          <div class="section-heading-row">
+            <div>
+              <h4>手机远程访问</h4>
+              <p class="status-text">用支持 WebDAV 的手机播放器连接音频库。这里只提供只读访问，不能从手机删除服务器文件。</p>
+            </div>
+            <span class="status-badge" id="davStatusBadge">检查中</span>
+          </div>
+          <div class="remote-access-grid">
+            <div>
+              <label>服务器地址
+                <div class="input-action-row">
+                  <input id="davUrlInput" type="url" readonly />
+                  <button class="btn" id="copyDavUrlBtn" type="button">复制</button>
+                </div>
+              </label>
+              <label>设备名称
+                <input id="appPasswordLabel" type="text" maxlength="80" placeholder="例如：我的 iPhone" />
+              </label>
+              <button class="btn primary" id="createAppPasswordBtn" type="button">生成应用密码</button>
+              <p class="status-text" id="davHelpText">需要 HTTPS 才能启用。</p>
+            </div>
+            <div class="dav-qr-wrap">
+              <img id="davQrImage" alt="WebDAV 地址二维码" hidden />
+              <span class="status-text">扫码可快速填写服务器地址</span>
+            </div>
+          </div>
+          <div class="one-time-secret" id="appPasswordReveal" hidden>
+            <strong>请立即保存，密码只显示这一次</strong>
+            <div class="credential-row"><span>用户名</span><code id="davUsername"></code></div>
+            <div class="credential-row"><span>应用密码</span><code id="davPassword"></code></div>
+            <button class="btn" id="copyDavCredentialsBtn" type="button">复制账号和密码</button>
+          </div>
+          <div class="app-password-list" id="appPasswordList"></div>
+        </section>
+
         <section class="tweaks-block" style="margin-top: 14px;">
           <h4>系统状态</h4>
           <div id="globalStats" class="mini-stats"></div>
@@ -366,6 +413,6 @@
       </div>
     </dialog>
 
-    <script src="/static/app.js?v=20260521-shelf"></script>
+    <script src="/static/app.js?v=20260826"></script>
   </body>
 </html>

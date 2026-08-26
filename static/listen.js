@@ -29,7 +29,7 @@ const state = {
   isPlaying: false,
   playbackRate: 1.0,
   fallbackActive: false,
-  theme: localStorage.getItem("lp_theme") || "dark",
+  theme: "dark",
   provider: "",          // chosen TTS provider for the aligned timeline
   variants: [],          // [{ provider, label, model, voice, cached, configured }]
 };
@@ -50,9 +50,8 @@ function getId() {
 }
 
 function applyTheme(t) {
-  document.documentElement.setAttribute("data-theme", t);
-  state.theme = t;
-  localStorage.setItem("lp_theme", t);
+  window.ELTheme?.apply("dark");
+  state.theme = "dark";
 }
 
 function setSub(text) {
@@ -78,7 +77,9 @@ function updateProgress() {
 }
 
 function updatePlayBtn() {
-  $("lpPlayBtn").textContent = state.isPlaying ? "❚❚" : "▶";
+  $("lpPlayBtn").innerHTML = state.isPlaying
+    ? '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="5" width="3.4" height="14" rx="1"/><rect x="13.6" y="5" width="3.4" height="14" rx="1"/></svg>'
+    : '<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg>';
 }
 
 // ── Vocab panel ──
@@ -809,9 +810,6 @@ function wireEvents() {
   $("lpBackBtn").addEventListener("click", () => {
     stopCurrent();
     window.location.href = "/static/index.html";
-  });
-  $("lpThemeBtn").addEventListener("click", () => {
-    applyTheme(state.theme === "dark" ? "light" : "dark");
   });
   $("lpRegenBtn").addEventListener("click", regenerateAligned);
   $("lpSource").addEventListener("click", (e) => {

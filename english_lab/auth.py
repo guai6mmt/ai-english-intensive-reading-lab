@@ -27,20 +27,22 @@ _LOGIN_LOCK = threading.Lock()
 _LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 STATIC_DIR = PROJECT_ROOT / "static"
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+PUBLIC_PATHS = {
+    "/login",
+    "/service-worker.js",
+    "/manifest.webmanifest",
+    "/openapi.json",
+    "/docs",
+    "/redoc",
+    "/health/live",
+    "/health/ready",
+}
 PUBLIC_API_PATHS = {
     "/api/auth/status",
     "/api/auth/setup",
     "/api/auth/login",
-    "/health/live",
-    "/health/ready",
 }
-PROTECTED_PAGE_PATHS = {
-    "/",
-    "/media",
-    "/static/index.html",
-    "/static/media.html",
-    "/static/listen.html",
-}
+SESSION_TOUCH_SECONDS = 300
 
 
 class Credentials(BaseModel):
@@ -64,7 +66,8 @@ def _session_for_token(token: str | None) -> dict[str, Any] | None:
     with connect() as connection:
         row = connection.execute(
             """SELECT sessions.id AS session_id, sessions.csrf_token,
-                      sessions.expires_at, users.id, users.username, users.role
+                      sessions.expires_at, sessions.last_seen_at,
+                      users.id, users.username, users.role
                FROM sessions
                JOIN users ON users.id = sessions.user_id
                WHERE sessions.token_hash = ? AND sessions.expires_at > ?""",
@@ -72,11 +75,16 @@ def _session_for_token(token: str | None) -> dict[str, Any] | None:
         ).fetchone()
         if not row:
             return None
-        connection.execute(
-            "UPDATE sessions SET last_seen_at = ? WHERE id = ?",
-            (now, row["session_id"]),
-        )
-        connection.commit()
+        try:
+            last_seen = datetime.fromisoformat(row["last_seen_at"])
+        except (TypeError, ValueError):
+            last_seen = datetime.min.replace(tzinfo=timezone.utc)
+        if (datetime.now(timezone.utc) - last_seen).total_seconds() >= SESSION_TOUCH_SECONDS:
+            connection.execute(
+                "UPDATE sessions SET last_seen_at = ? WHERE id = ?",
+                (now, row["session_id"]),
+            )
+            connection.commit()
         return dict(row)
 
 
@@ -119,22 +127,30 @@ def _set_session_cookie(response: Response, token: str) -> None:
 class SessionAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
         path = request.url.path
+
+        # Static assets and public infrastructure endpoints never need a DB lookup.
+        if path.startswith("/static/") or path in PUBLIC_PATHS:
+            request.state.user = None
+            return await call_next(request)
+
+        # WebDAV owns its HTTP Basic authentication and never uses browser cookies.
+        if path == "/dav" or path.startswith("/dav/"):
+            request.state.user = None
+            return await call_next(request)
+
         token = request.cookies.get(config.session_cookie)
         session = _session_for_token(token)
         request.state.user = session
 
-        if path in PUBLIC_API_PATHS or path == "/login":
+        if path in PUBLIC_API_PATHS:
             return await call_next(request)
 
-        if path in PROTECTED_PAGE_PATHS and not session:
+        if not session:
+            if path.startswith(("/api/", "/audio/", "/covers/")):
+                return JSONResponse({"detail": "请先登录。"}, status_code=401)
             return RedirectResponse(url="/login", status_code=303)
 
-        if (path.startswith("/audio/") or path.startswith("/covers/")) and not session:
-            return JSONResponse({"detail": "请先登录。"}, status_code=401)
-
         if path.startswith("/api/"):
-            if not session:
-                return JSONResponse({"detail": "请先登录。"}, status_code=401)
             if request.method in UNSAFE_METHODS:
                 supplied = request.headers.get("x-csrf-token", "")
                 if not supplied or not secrets.compare_digest(supplied, session["csrf_token"]):

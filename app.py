@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from bs4 import BeautifulSoup
+from cryptography.fernet import Fernet, InvalidToken
 from docx import Document
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
@@ -62,6 +63,7 @@ VOCAB_PATH = DATA_DIR / "vocabulary.json"
 OUTPUTS_PATH = DATA_DIR / "outputs.json"
 PROGRESS_PATH = DATA_DIR / "progress.json"
 SETTINGS_PATH = DATA_DIR / "settings.json"
+SETTINGS_KEY_PATH = DATA_DIR / ".settings.key"
 
 SUPPORTED_EXTENSIONS = {".epub", ".docx", ".txt"}
 MAX_AI_CHARS = 10000
@@ -389,6 +391,16 @@ def ensure_dirs() -> None:
 
 
 _JSON_DATA_LOCK = threading.RLock()
+_SETTINGS_KEY_LOCK = threading.Lock()
+_ENCRYPTED_PREFIX = "enc:v1:"
+_SENSITIVE_SETTING_KEYS = {
+    "deepseek_api_key",
+    "qwen_api_key",
+    "dashscope_api_key",
+    "minimax_api_key",
+    "oss_access_key_id",
+    "oss_access_key_secret",
+}
 
 
 def load_json(path: Path, default: Any) -> Any:
@@ -411,6 +423,10 @@ def save_json(path: Path, data: Any) -> None:
                 output.flush()
                 os.fsync(output.fileno())
             os.replace(temp_path, path)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
         finally:
             temp_path.unlink(missing_ok=True)
 
@@ -456,12 +472,51 @@ def find_duplicate_source(library: dict[str, Any], content_hash: str) -> dict[st
     return None
 
 
+def _settings_cipher() -> Fernet:
+    with _SETTINGS_KEY_LOCK:
+        if SETTINGS_KEY_PATH.exists():
+            key = SETTINGS_KEY_PATH.read_bytes().strip()
+        else:
+            SETTINGS_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            key = Fernet.generate_key()
+            try:
+                with SETTINGS_KEY_PATH.open("xb") as output:
+                    output.write(key)
+            except FileExistsError:
+                key = SETTINGS_KEY_PATH.read_bytes().strip()
+            try:
+                os.chmod(SETTINGS_KEY_PATH, 0o600)
+            except OSError:
+                pass
+        return Fernet(key)
+
+
 def load_settings() -> dict[str, Any]:
-    return load_json(SETTINGS_PATH, {})
+    settings = load_json(SETTINGS_PATH, {})
+    cipher: Fernet | None = None
+    for key in _SENSITIVE_SETTING_KEYS:
+        value = settings.get(key)
+        if not isinstance(value, str) or not value.startswith(_ENCRYPTED_PREFIX):
+            continue
+        cipher = cipher or _settings_cipher()
+        try:
+            settings[key] = cipher.decrypt(value[len(_ENCRYPTED_PREFIX):].encode("ascii")).decode("utf-8")
+        except (InvalidToken, ValueError, UnicodeDecodeError):
+            settings[key] = ""
+    return settings
 
 
 def save_settings(settings: dict[str, Any]) -> None:
-    save_json(SETTINGS_PATH, settings)
+    stored = dict(settings)
+    cipher: Fernet | None = None
+    for key in _SENSITIVE_SETTING_KEYS:
+        value = stored.get(key)
+        if not isinstance(value, str) or not value or value.startswith(_ENCRYPTED_PREFIX):
+            continue
+        cipher = cipher or _settings_cipher()
+        encrypted = cipher.encrypt(value.encode("utf-8")).decode("ascii")
+        stored[key] = _ENCRYPTED_PREFIX + encrypted
+    save_json(SETTINGS_PATH, stored)
 
 
 def mask_secret(value: str | None) -> str:
@@ -4610,10 +4665,13 @@ VIDEO_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 from english_lab.auth import SessionAuthMiddleware, router as auth_router  # noqa: E402
 from english_lab.health import router as health_router  # noqa: E402
 from english_lab.media import router as media_router  # noqa: E402
+from english_lab.webdav import router as webdav_api_router, webdav_routes  # noqa: E402
 
 app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(media_router)
+app.include_router(webdav_api_router)
+app.router.routes.extend(webdav_routes)
 app.add_middleware(SessionAuthMiddleware)
 
 app.mount("/audio", StaticFiles(directory=AUDIO_CACHE_DIR), name="audio")

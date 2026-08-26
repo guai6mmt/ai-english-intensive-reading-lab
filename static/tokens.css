@@ -1,0 +1,36 @@
+/* English Lab · shared design tokens */
+:root {
+  --bg: #f3f1ec; --paper: #fbfaf6; --panel: #ffffff;
+  --ink: #15191c; --ink-2: #2c343a; --muted: #6b7680;
+  --line: #e3dfd5; --line-strong: #cfc9bc;
+  --accent: #15554b; --accent-soft: #e6efe9; --accent-ink: #0e3a34;
+  --warn: #b06a1a; --warn-soft: #fbeed3; --error: #a93223; --error-soft: #f5dbd4;
+  --good: #2f7d4f; --good-soft: #def0e2; --highlight: #fff0bf;
+  --dock: #1b211e; --dock-ink: #eef1ec; --dock-muted: #93a49a;
+  --dock-line: #3a463f; --dock-raised: #2c3630; --dock-key: #f2efe1; --dock-key-ink: #16211b;
+  --on-accent: #f4f7f4; --switch-knob: #ffffff; --backdrop: rgba(15,23,17,.5);
+  --shadow-sm: 0 1px 0 rgba(20,25,28,.04), 0 1px 2px rgba(20,25,28,.05);
+  --shadow-md: 0 8px 24px rgba(20,25,28,.07); --shadow-dock: 0 -10px 30px rgba(20,25,28,.12);
+  --radius-sm: 6px; --radius: 8px; --radius-lg: 12px; --radius-pill: 999px;
+  --h-sm: 28px; --h-md: 34px; --h-touch: 44px;
+  --rail-w: 60px; --side-w: 272px; --toolbar-h: 48px; --dock-h: 76px;
+  --serif: "Source Serif 4", Georgia, "Songti SC", serif;
+  --sans: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  --reader-size: 18px; --reader-leading: 1.78;
+}
+[data-theme="slate"] {
+  --bg:#eef1f4; --paper:#ffffff; --panel:#ffffff; --ink:#15191c; --ink-2:#2c343a; --muted:#6b7680;
+  --line:#dfe4ea; --line-strong:#c4ccd5; --accent:#1e4ea8; --accent-soft:#e7eefb; --accent-ink:#163d85;
+  --highlight:#fff3a8; --dock:#1a2430; --dock-ink:#e9eef4; --dock-muted:#93a2b4;
+  --dock-line:#33415a; --dock-raised:#26344a; --dock-key:#eef2f8; --dock-key-ink:#16202c;
+}
+[data-theme="dark"] {
+  --bg:#14171a; --paper:#1b1f23; --panel:#20252a; --ink:#e9ecef; --ink-2:#c8cfd4; --muted:#8a949c;
+  --line:#2c333a; --line-strong:#3a434c; --accent:#6ad0bd; --accent-soft:#1d3a37; --accent-ink:#a4ddcd;
+  --warn:#e0a35a; --warn-soft:#3a2e1a; --error:#e07a6b; --error-soft:#3a201c;
+  --good:#7ec295; --good-soft:#1d3025; --highlight:#4a4216;
+  --dock:#20252a; --dock-ink:#e9ecef; --dock-muted:#8a949c; --dock-line:#3a434c;
+  --dock-raised:#2b3238; --dock-key:#6ad0bd; --dock-key-ink:#10201d; --backdrop:rgba(0,0,0,.62);
+  --shadow-sm:0 1px 0 rgba(0,0,0,.4); --shadow-md:0 8px 24px rgba(0,0,0,.4); --shadow-dock:0 -10px 30px rgba(0,0,0,.45);
+}

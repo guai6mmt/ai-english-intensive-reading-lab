@@ -9,7 +9,24 @@ from pathlib import Path
 from .config import config, ensure_server_dirs
 
 
-SCHEMA_VERSION = 1
+BASE_SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+MIGRATIONS: dict[int, tuple[str, ...]] = {
+    2: (
+        """CREATE TABLE IF NOT EXISTS app_passwords (
+               id TEXT PRIMARY KEY,
+               user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+               label TEXT NOT NULL,
+               password_hash TEXT NOT NULL,
+               scope TEXT NOT NULL DEFAULT 'dav:read',
+               created_at TEXT NOT NULL,
+               last_used_at TEXT,
+               revoked_at TEXT
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_app_pw_user ON app_passwords(user_id)",
+    ),
+}
 
 
 def utc_now() -> str:
@@ -173,16 +190,32 @@ def _schema_sql() -> str:
     """
 
 
+def _migrate(connection: sqlite3.Connection) -> None:
+    row = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+    current = int(row[0] or 0)
+    if current == 0:
+        connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (BASE_SCHEMA_VERSION, utc_now()),
+        )
+        current = BASE_SCHEMA_VERSION
+    for version in sorted(value for value in MIGRATIONS if current < value <= SCHEMA_VERSION):
+        for statement in MIGRATIONS[version]:
+            connection.execute(statement)
+        connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+            (version, utc_now()),
+        )
+        current = version
+
+
 def initialize_database() -> None:
     ensure_server_dirs()
     with connect() as connection:
         connection.execute("PRAGMA journal_mode = WAL")
         connection.execute("PRAGMA synchronous = NORMAL")
         connection.executescript(_schema_sql())
-        connection.execute(
-            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-            (SCHEMA_VERSION, utc_now()),
-        )
+        _migrate(connection)
         # A process restart cannot resume an in-process worker. Keep the durable
         # record honest so the administrator can retry the scan.
         connection.execute(

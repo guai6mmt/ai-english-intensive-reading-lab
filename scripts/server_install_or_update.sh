@@ -136,7 +136,7 @@ After=network.target
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=-${APP_DIR}/.env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=${APP_DIR}/.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port ${PORT}
+ExecStart=${APP_DIR}/.venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port ${PORT} --proxy-headers --forwarded-allow-ips 127.0.0.1
 User=${APP_USER}
 Group=${APP_GROUP}
 UMask=0077
@@ -182,6 +182,7 @@ ${DOMAIN} {
         X-Content-Type-Options "nosniff"
         X-Frame-Options "DENY"
         Referrer-Policy "same-origin"
+        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
         -Server
     }
     reverse_proxy 127.0.0.1:${PORT}
