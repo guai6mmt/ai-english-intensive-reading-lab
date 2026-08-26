@@ -23,9 +23,9 @@ def _seed_pairing_content() -> tuple[str, str, list[str], list[str]]:
         "filename": "TE-2026-08-22-EPUB.epub",
         "uploaded_at": utc_now(),
         "articles": [
-            {"id": article_ids[0], "source_id": source_id, "section": "Europe", "title": "First Europe story"},
-            {"id": article_ids[1], "source_id": source_id, "section": "Europe", "title": "Second Europe story"},
-            {"id": article_ids[2], "source_id": source_id, "section": "Unlabelled", "title": "Needs a manual match"},
+            {"id": article_ids[0], "source_id": source_id, "section": "Europe", "title": "First Europe story", "paragraphs": ["This is the first European story used for testing."]},
+            {"id": article_ids[1], "source_id": source_id, "section": "Europe", "title": "Second Europe story", "paragraphs": ["This is the second European story used for testing."]},
+            {"id": article_ids[2], "source_id": source_id, "section": "Unlabelled", "title": "Needs a manual match", "paragraphs": ["This article needs a manually selected original audio track."]},
         ],
     })
     library_path.write_text(json.dumps(library), encoding="utf-8")
@@ -48,6 +48,9 @@ def _seed_pairing_content() -> tuple[str, str, list[str], list[str]]:
                    ) VALUES (?, ?, ?, ?, ?, '.mp3', 'audio/mpeg', 100, ?, ?, ?)""",
                 (media_id, collection_id, title, f"{title}.mp3", f"originals/test/{media_id}.mp3", f"sha-{token}-{index}", now, now),
             )
+            stored = config.media_root / f"originals/test/{media_id}.mp3"
+            stored.parent.mkdir(parents=True, exist_ok=True)
+            stored.write_bytes(b"ID3")
     return source_id, collection_id, article_ids, media_ids
 
 
@@ -97,6 +100,12 @@ def test_preview_and_manual_pairing(authenticated_client):
     assert article.status_code == 200, article.text
     assert article.json()["article"]["linked_media"]["id"] == media_ids[2]
     assert article.json()["article"]["linked_media"]["match_method"] == "manual"
+
+    variants = client.get(f"/api/articles/{article_ids[2]}/listening/audio-variants")
+    assert variants.status_code == 200, variants.text
+    original = next(item for item in variants.json()["variants"] if item["provider"] == "original")
+    assert original["media_id"] == media_ids[2]
+    assert original["audio_url"].endswith(f"/{media_ids[2]}/stream")
 
     media = client.get("/api/v1/media/items?sort=track&limit=200").json()["items"]
     linked = next(item for item in media if item["id"] == media_ids[2])

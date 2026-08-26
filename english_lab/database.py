@@ -10,7 +10,7 @@ from .config import config, ensure_server_dirs
 
 
 BASE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     2: (
@@ -48,6 +48,34 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
                updated_at TEXT NOT NULL
            )""",
         "CREATE INDEX IF NOT EXISTS idx_article_media_source ON article_media_links(article_source_id)",
+    ),
+    4: (
+        """CREATE TABLE IF NOT EXISTS listening_sentence_progress (
+               user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+               article_id TEXT NOT NULL,
+               sentence_index INTEGER NOT NULL,
+               sentence_text TEXT NOT NULL,
+               attempts INTEGER NOT NULL DEFAULT 0,
+               best_score REAL NOT NULL DEFAULT 0,
+               last_score REAL NOT NULL DEFAULT 0,
+               last_stage TEXT NOT NULL DEFAULT 'dictation',
+               error_count INTEGER NOT NULL DEFAULT 0,
+               interval_days INTEGER NOT NULL DEFAULT 0,
+               ease REAL NOT NULL DEFAULT 2.3,
+               due_at TEXT NOT NULL,
+               last_result_json TEXT NOT NULL DEFAULT '{}',
+               last_practiced_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL,
+               PRIMARY KEY (user_id, article_id, sentence_index)
+           )""",
+        """CREATE INDEX IF NOT EXISTS idx_listening_review_due
+               ON listening_sentence_progress(user_id, due_at, last_score)""",
+        """CREATE INDEX IF NOT EXISTS idx_listening_article
+               ON listening_sentence_progress(user_id, article_id, sentence_index)""",
+    ),
+    5: (
+        "ALTER TABLE listening_sentence_progress ADD COLUMN last_dictation_score REAL",
+        "ALTER TABLE listening_sentence_progress ADD COLUMN shadowing_rating INTEGER",
     ),
 }
 
@@ -224,7 +252,14 @@ def _migrate(connection: sqlite3.Connection) -> None:
         current = BASE_SCHEMA_VERSION
     for version in sorted(value for value in MIGRATIONS if current < value <= SCHEMA_VERSION):
         for statement in MIGRATIONS[version]:
-            connection.execute(statement)
+            try:
+                connection.execute(statement)
+            except sqlite3.OperationalError as exc:
+                # A development build may have created a newly introduced column
+                # before its migration version was finalized. Treat that one safe,
+                # observable state as already applied; all other SQL errors remain fatal.
+                if not (statement.lstrip().upper().startswith("ALTER TABLE") and "duplicate column name" in str(exc).lower()):
+                    raise
         connection.execute(
             "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
             (version, utc_now()),
@@ -239,6 +274,7 @@ def initialize_database() -> None:
         connection.execute("PRAGMA synchronous = NORMAL")
         connection.executescript(_schema_sql())
         _migrate(connection)
+        connection.execute("PRAGMA optimize")
         # A process restart cannot resume an in-process worker. Keep the durable
         # record honest so the administrator can retry the scan.
         connection.execute(

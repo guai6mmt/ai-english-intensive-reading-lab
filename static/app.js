@@ -49,6 +49,9 @@ const state = {
     mediaId: "",
     lastProgressSave: 0,
     resumeHandled: false,
+    preciseAlignments: [],
+    alignmentLoading: false,
+    alignmentAttempted: false,
   },
 };
 
@@ -566,6 +569,9 @@ async function openArticle(articleId) {
       state.originalAudio.timeline = [];
       state.originalAudio.timelineDuration = 0;
       state.originalAudio.currentSentenceId = "";
+      state.originalAudio.preciseAlignments = [];
+      state.originalAudio.alignmentAttempted = false;
+      state.originalAudio.alignmentLoading = false;
     }
     state.currentArticle = data.article;
     $("appShell").dataset.mobileSide = "closed";
@@ -664,6 +670,21 @@ function rebuildOriginalAudioTimeline() {
     state.originalAudio.timeline = [];
     state.originalAudio.timelineDuration = 0;
     return;
+  }
+  const precise = state.originalAudio.preciseAlignments;
+  if (precise.length) {
+    const byIndex = new Map(precise.map((item) => [Number(item.index), item]));
+    const exactTimeline = sentences.map((sentence, index) => {
+      const item = byIndex.get(index);
+      return item && Number.isFinite(Number(item.begin_ms)) && Number.isFinite(Number(item.end_ms))
+        ? { sid: sentence.dataset.sid, start: Number(item.begin_ms) / 1000, end: Number(item.end_ms) / 1000 }
+        : null;
+    });
+    if (exactTimeline.every(Boolean)) {
+      state.originalAudio.timeline = exactTimeline;
+      state.originalAudio.timelineDuration = duration;
+      return;
+    }
   }
   const weights = sentences.map(originalAudioSentenceWeight);
   const total = weights.reduce((sum, weight) => sum + weight, 0) || 1;
@@ -765,6 +786,8 @@ async function playOriginalArticleAudio(options = {}) {
     state.originalAudio.mediaId = media.id;
     state.originalAudio.timeline = [];
     state.originalAudio.currentSentenceId = "";
+    state.originalAudio.preciseAlignments = [];
+    state.originalAudio.alignmentAttempted = false;
   }
   player.playbackRate = Number.isFinite(rate) ? Math.max(0.5, Math.min(3, rate)) : 1;
   const applyPosition = () => {
@@ -781,6 +804,47 @@ async function playOriginalArticleAudio(options = {}) {
   $("articleAudioLibraryLink").href = `/media?media=${encodeURIComponent(media.id)}`;
   $("articleAudioDock").hidden = false;
   if (options.autoplay !== false) player.play().catch(() => {});
+  loadOriginalAudioAlignment();
+}
+
+async function loadOriginalAudioAlignment(force = false) {
+  if (!state.currentArticle?.linked_media || state.originalAudio.alignmentLoading) return;
+  if (state.originalAudio.alignmentAttempted && !force) return;
+  state.originalAudio.alignmentAttempted = true;
+  state.originalAudio.alignmentLoading = true;
+  const articleId = state.currentArticle.id;
+  const mediaId = state.currentArticle.linked_media.id;
+  const meta = $("articleAudioMeta");
+  const base = state.currentArticle.linked_media.title || "原版音频";
+  meta.textContent = `${base} · 正在准备精确句子同步…`;
+  try {
+    const started = await api(`/api/articles/${encodeURIComponent(articleId)}/listening/original-audio/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh: force, enable_words: true }),
+    });
+    let result = started.result;
+    while (!result) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const status = await api(`/api/articles/${encodeURIComponent(articleId)}/listening/original-audio/status/${encodeURIComponent(started.task_id)}`);
+      if (status.error) throw new Error(status.error);
+      result = status.result;
+    }
+    if (state.currentArticle?.id !== articleId || originalAudioPlayer().dataset.mediaId !== mediaId) return;
+    state.originalAudio.preciseAlignments = result.alignments || [];
+    state.originalAudio.timeline = [];
+    state.originalAudio.currentSentenceId = "";
+    rebuildOriginalAudioTimeline();
+    syncOriginalAudioHighlight();
+    const precise = Number(result.meta?.precise_count || state.originalAudio.preciseAlignments.length);
+    const estimated = Number(result.meta?.estimated_count || 0);
+    meta.textContent = `${base} · 精确同步 ${precise} 句${estimated ? ` · ${estimated} 句估算补齐` : ""}`;
+  } catch (error) {
+    console.warn("original audio alignment unavailable", error);
+    meta.textContent = `${base} · 句子同步为语速估算`;
+  } finally {
+    state.originalAudio.alignmentLoading = false;
+  }
 }
 
 async function restoreOriginalAudioFromLink() {

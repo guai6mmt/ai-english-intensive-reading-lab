@@ -276,6 +276,11 @@ class AlignedAudioRequest(BaseModel):
     provider: str | None = None
 
 
+class OriginalAlignmentRequest(BaseModel):
+    refresh: bool = False
+    enable_words: bool = True
+
+
 class VideoExportRequest(BaseModel):
     provider: str | None = None
     ratios: list[str] = ["16:9"]
@@ -1916,6 +1921,16 @@ def upload_temp_audio_to_oss(audio_bytes: bytes, object_key: str, mime_type: str
     return bucket, signed_url
 
 
+def upload_temp_audio_file_to_oss(path: Path, object_key: str, mime_type: str, expires: int = 3600) -> tuple[Any, str]:
+    bucket, _config = oss_bucket_client()
+    try:
+        bucket.put_object_from_file(object_key, str(path), headers={"Content-Type": mime_type})
+        signed_url = bucket.sign_url("GET", object_key, expires)
+    except Exception as exc:
+        raise HTTPException(502, f"上传原版音频到 OSS 失败：{exc}") from exc
+    return bucket, signed_url
+
+
 def dashscope_asr_url(base_url: str) -> str:
     return f"{normalize_dashscope_api_url(base_url)}/services/audio/asr/transcription"
 
@@ -3185,6 +3200,184 @@ def listening_sentences(article_id: str) -> dict[str, Any]:
     return {"article_id": article_id, "title": article.get("title", ""), "sentences": items}
 
 
+def original_audio_alignment_key(
+    article_id: str,
+    items: list[dict[str, Any]],
+    media: dict[str, Any],
+    asr_model: str,
+    enable_words: bool = True,
+) -> str:
+    text_hash = stable_id(*(item["text"] for item in items[:300]), str(len(items)))
+    payload = (
+        f"original|{article_id}|{media['id']}|{media.get('sha256', '')}|"
+        f"{media.get('file_size', 0)}|{text_hash}|{asr_model}|words:{int(enable_words)}|v1"
+    )
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _original_audio_context(article_id: str, enable_words: bool = True) -> dict[str, Any]:
+    article = find_article(article_id)
+    items = listening_sentence_items(article)
+    if not items:
+        raise HTTPException(400, "文章暂无可对齐的句子。")
+    media = linked_media_source_for_article(article_id)
+    if not media:
+        raise HTTPException(404, "文章尚未配套原版音频。")
+    asr_config = qwen_asr_config()
+    oss = oss_config()
+    configured = bool(
+        asr_config.get("api_key")
+        and oss.get("access_key_id") and oss.get("access_key_secret")
+        and oss.get("bucket") and oss.get("endpoint")
+    )
+    key = original_audio_alignment_key(article_id, items, media, asr_config["model"], enable_words)
+    return {
+        "article": article,
+        "article_id": article_id,
+        "items": items,
+        "media": media,
+        "asr_config": asr_config,
+        "oss": oss,
+        "configured": configured,
+        "key": key,
+        "align_path": AUDIO_CACHE_DIR / f"{key}.original.align.json",
+        "audio_url": media["stream_url"],
+    }
+
+
+def _cached_original_audio_payload(ctx: dict[str, Any]) -> dict[str, Any] | None:
+    cached = load_json(ctx["align_path"], {})
+    if not cached.get("alignments"):
+        return None
+    return {
+        "article_id": ctx["article_id"],
+        "title": ctx["article"].get("title", ""),
+        "audio_url": ctx["audio_url"],
+        "media_id": ctx["media"]["id"],
+        "provider": "original",
+        "cached": True,
+        **cached,
+    }
+
+
+def _fill_original_alignment_gaps(
+    items: list[dict[str, Any]], alignments: list[dict[str, Any]], total_ms: int
+) -> list[dict[str, Any]]:
+    by_index = {int(item.get("index", -1)): dict(item) for item in alignments}
+    out = [by_index.get(item["index"]) or _empty_alignment(item) for item in items]
+    valid = [i for i, item in enumerate(out) if _valid_alignment(item)]
+    if not valid:
+        fallback = _proportional_time_alignment(items, total_ms)
+        for item in fallback:
+            item["estimated"] = True
+        return fallback
+
+    cursor = 0
+    while cursor < len(out):
+        if _valid_alignment(out[cursor]):
+            out[cursor]["estimated"] = False
+            cursor += 1
+            continue
+        start = cursor
+        while cursor < len(out) and not _valid_alignment(out[cursor]):
+            cursor += 1
+        end = cursor
+        window_start = int(out[start - 1]["end_ms"]) if start > 0 and _valid_alignment(out[start - 1]) else 0
+        window_end = int(out[end]["begin_ms"]) if end < len(out) and _valid_alignment(out[end]) else total_ms
+        window_end = max(window_start + (end - start), window_end)
+        weights = [max(1, len(normalize_for_alignment(items[i]["text"]).split())) for i in range(start, end)]
+        total_weight = sum(weights) or 1
+        acc = window_start
+        for offset, index in enumerate(range(start, end)):
+            begin = acc
+            acc = window_end if index == end - 1 else acc + int((window_end - window_start) * weights[offset] / total_weight)
+            out[index].update({
+                "begin_ms": begin,
+                "end_ms": max(begin + 1, acc),
+                "confidence": 0.0,
+                "estimated": True,
+            })
+    _enforce_monotonic(out, total_ms)
+    return out
+
+
+def _run_original_audio_alignment(
+    ctx: dict[str, Any], enable_words: bool, progress_cb: Callable[[str, int, str], None]
+) -> dict[str, Any]:
+    if not ctx["configured"]:
+        raise PipelineError("原版音频精确对齐需要配置 Qwen ASR 与 OSS。")
+    media = ctx["media"]
+    suffix = media["path"].suffix.lower() or ".audio"
+    object_key = f"{ctx['oss']['temp_prefix']}original-{ctx['key']}{suffix}"
+    bucket = None
+    asr_task_id = ""
+    try:
+        progress_cb("oss_upload", 12, f"上传原版音频到 OSS ({ctx['oss']['bucket']})…")
+        bucket, signed_url = upload_temp_audio_file_to_oss(
+            media["path"], object_key, media.get("mime_type") or "application/octet-stream"
+        )
+        progress_cb("asr_submit", 24, "提交原版音频转写任务…")
+        asr_task_id, meta = start_qwen_filetranscription(signed_url, enable_words=enable_words)
+
+        def _asr_tick(elapsed: int, status: str) -> None:
+            pct = 28 + min(58, int(elapsed / 240 * 58))
+            mm, ss = divmod(elapsed, 60)
+            progress_cb("asr_polling", pct, f"正在识别原版音频… {mm:02d}:{ss:02d} · {status}")
+
+        task_result = poll_qwen_asr_task(
+            asr_task_id,
+            ctx["asr_config"]["base_url"],
+            ctx["asr_config"]["api_key"],
+            timeout_seconds=300,
+            on_tick=_asr_tick,
+        )
+        progress_cb("asr_fetch", 88, "读取原版音频转写结果…")
+        transcript = fetch_qwen_transcription(task_result)
+    finally:
+        if bucket is not None:
+            try:
+                bucket.delete_object(object_key)
+            except Exception:
+                pass
+
+    asr_sentences = extract_asr_sentences(transcript)
+    if not asr_sentences:
+        raise PipelineError("Qwen ASR 没有返回可用的原版音频时间戳。")
+    progress_cb("align", 94, "将原版音频与文章逐句对齐…")
+    total_ms = int(media.get("duration_ms") or 0)
+    if total_ms <= 0:
+        total_ms = max((int(item.get("end_ms") or 0) for item in asr_sentences), default=0)
+    if total_ms <= 0:
+        raise PipelineError("无法读取原版音频时长。")
+    raw_alignments = align_asr_to_original(ctx["items"], asr_sentences, total_ms=total_ms)
+    alignments = _fill_original_alignment_gaps(ctx["items"], raw_alignments, total_ms)
+    precise_count = sum(1 for item in alignments if not item.get("estimated"))
+    payload = {
+        "alignments": alignments,
+        "asr_sentences": asr_sentences,
+        "meta": {
+            **meta,
+            "task_id": asr_task_id,
+            "source": "original",
+            "media_id": media["id"],
+            "precise_count": precise_count,
+            "estimated_count": len(alignments) - precise_count,
+            "enable_words": enable_words,
+        },
+    }
+    progress_cb("cleanup", 98, "保存原版音频时间轴…")
+    save_json(ctx["align_path"], payload)
+    return {
+        "article_id": ctx["article_id"],
+        "title": ctx["article"].get("title", ""),
+        "audio_url": ctx["audio_url"],
+        "media_id": media["id"],
+        "provider": "original",
+        "cached": False,
+        **payload,
+    }
+
+
 @app.get("/api/articles/{article_id}/listening/audio-variants")
 def listening_audio_variants(article_id: str) -> dict[str, Any]:
     """List the per-provider aligned-audio variants and whether each is already
@@ -3194,6 +3387,21 @@ def listening_audio_variants(article_id: str) -> dict[str, Any]:
     settings = load_settings()
     current = task_provider("audio", settings=settings)
     variants = []
+    try:
+        original_ctx = _original_audio_context(article_id, enable_words=True)
+        original_cached = bool(_cached_original_audio_payload(original_ctx))
+        variants.append({
+            "provider": "original",
+            "label": "原版音频",
+            "model": original_ctx["asr_config"]["model"],
+            "voice": "",
+            "configured": original_ctx["configured"],
+            "cached": original_cached,
+            "audio_url": original_ctx["audio_url"],
+            "media_id": original_ctx["media"]["id"],
+        })
+    except HTTPException:
+        pass
     for provider in ("qwen", "minimax"):
         try:
             ctx = _build_aligned_context(article, article_id, items, provider)
@@ -3589,6 +3797,60 @@ def align_minimax_sentences(
         })
     _enforce_monotonic(out, total_ms)
     return out, "subtitle-charmap"
+
+
+@app.post("/api/articles/{article_id}/listening/original-audio/start")
+def listening_original_audio_start(article_id: str, request: OriginalAlignmentRequest) -> dict[str, Any]:
+    ctx = _original_audio_context(article_id, enable_words=request.enable_words)
+    if not request.refresh:
+        cached = _cached_original_audio_payload(ctx)
+        if cached:
+            return {"cached": True, "result": cached}
+    elif ctx["align_path"].exists():
+        safe_unlink(ctx["align_path"])
+
+    existing = find_job_by_key("original_audio_alignment", ctx["key"])
+    if existing:
+        return {"cached": False, "task_id": existing["task_id"], "reused": True}
+
+    task_id = create_job("original_audio_alignment", key=ctx["key"])
+
+    def _worker() -> None:
+        def cb(stage: str, pct: int, msg: str) -> None:
+            update_job(task_id, stage=stage, pct=pct, msg=msg)
+        try:
+            result = _run_original_audio_alignment(ctx, request.enable_words, cb)
+            finish_job(task_id, result=result)
+        except PipelineError as exc:
+            finish_job(task_id, error=str(exc))
+        except HTTPException as exc:
+            finish_job(task_id, error=str(exc.detail))
+        except Exception as exc:  # noqa: BLE001
+            finish_job(task_id, error=f"内部错误：{exc}")
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return {"cached": False, "task_id": task_id, "reused": False}
+
+
+@app.get("/api/articles/{article_id}/listening/original-audio/status/{task_id}")
+def listening_original_audio_status(article_id: str, task_id: str) -> dict[str, Any]:
+    job = get_job(task_id)
+    if not job or job.get("kind") != "original_audio_alignment":
+        raise HTTPException(404, "原版音频对齐任务不存在或已过期。")
+    out = {
+        "task_id": task_id,
+        "stage": job["stage"],
+        "pct": job["pct"],
+        "msg": job["msg"],
+        "started_at": job["started_at"],
+        "updated_at": job["updated_at"],
+        "finished_at": job["finished_at"],
+    }
+    if job["error"]:
+        out["error"] = job["error"]
+    if job["result"]:
+        out["result"] = job["result"]
+    return out
 
 
 @app.post("/api/articles/{article_id}/listening/aligned-audio")
@@ -4690,16 +4952,19 @@ from english_lab.health import router as health_router  # noqa: E402
 from english_lab.media import router as media_router  # noqa: E402
 from english_lab.content_links import (  # noqa: E402
     linked_media_for_article,
+    linked_media_source_for_article,
     linked_media_summaries,
     remove_source_links,
     router as content_links_router,
 )
+from english_lab.listening_practice import router as listening_practice_router  # noqa: E402
 from english_lab.webdav import router as webdav_api_router, webdav_routes  # noqa: E402
 
 app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(media_router)
 app.include_router(content_links_router)
+app.include_router(listening_practice_router)
 app.include_router(webdav_api_router)
 app.router.routes.extend(webdav_routes)
 app.add_middleware(SessionAuthMiddleware)

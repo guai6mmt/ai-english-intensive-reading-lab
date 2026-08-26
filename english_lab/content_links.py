@@ -396,6 +396,29 @@ def linked_media_for_article(article_id: str) -> dict[str, Any] | None:
     return payload
 
 
+def linked_media_source_for_article(article_id: str) -> dict[str, Any] | None:
+    """Return the linked original audio plus its validated server-side path."""
+    with connect() as connection:
+        row = connection.execute(
+            """SELECT media_items.id, media_items.title, media_items.original_name,
+                      media_items.storage_path, media_items.mime_type, media_items.sha256,
+                      media_items.duration_ms, media_items.file_size
+               FROM article_media_links
+               JOIN media_items ON media_items.id = article_media_links.media_id
+               WHERE article_media_links.article_id = ? AND media_items.deleted_at IS NULL""",
+            (article_id,),
+        ).fetchone()
+    if not row:
+        return None
+    payload = dict(row)
+    path = (config.media_root / payload.pop("storage_path")).resolve()
+    if not path.is_relative_to(config.media_root) or not path.is_file():
+        raise HTTPException(404, "配套原版音频文件不存在。")
+    payload["path"] = path
+    payload["stream_url"] = f"/api/v1/media/items/{payload['id']}/stream"
+    return payload
+
+
 def linked_media_summaries(article_ids: list[str]) -> dict[str, dict[str, Any]]:
     if not article_ids:
         return {}

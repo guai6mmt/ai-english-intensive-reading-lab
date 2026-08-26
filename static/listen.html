@@ -15,12 +15,12 @@
     />
     <link rel="stylesheet" href="/static/tokens.css?v=20260826" />
     <link rel="stylesheet" href="/static/components.css?v=20260826" />
-    <link rel="stylesheet" href="/static/listen.css?v=20260826" />
+    <link rel="stylesheet" href="/static/listen.css?v=20260828" />
     <script src="/static/theme.js?v=20260826"></script>
     <script src="/static/auth.js"></script>
   </head>
   <body>
-    <div class="lp" id="lpRoot">
+    <div class="lp" id="lpRoot" data-stage="blind">
 
       <!-- ── Top bar ── -->
       <header class="lp-top">
@@ -50,6 +50,14 @@
 
       <!-- ── Vocab pane (right, spans full height) ── -->
       <div class="lp-vocab">
+        <div class="lp-stage-tabs" id="lpStageTabs" role="tablist" aria-label="精听训练阶段">
+          <button data-stage="blind" aria-selected="true"><b>1</b>盲听</button>
+          <button data-stage="dictation" aria-selected="false"><b>2</b>听写</button>
+          <button data-stage="correction" aria-selected="false"><b>3</b>纠错</button>
+          <button data-stage="shadowing" aria-selected="false"><b>4</b>跟读</button>
+          <button class="lp-review-tab" id="lpReviewBtn" title="打开错句复习队列">复习 <span id="lpReviewCount">0</span></button>
+        </div>
+        <div class="lp-practice" id="lpPracticeBody"></div>
         <div class="lp-vocab-head">
           <span>当前句生词</span>
           <span class="lp-vocab-status" id="lpVocabStatus"></span>
@@ -62,6 +70,20 @@
       <!-- ── Bottom control bar ── -->
       <footer class="lp-controls">
         <div class="lp-source" id="lpSource" hidden></div>
+        <div class="lp-drill-controls" aria-label="逐句练习设置">
+          <label>每句
+            <select id="lpRepeatCount" aria-label="每句播放次数">
+              <option value="1">1 次</option><option value="2">2 次</option><option value="3">3 次</option><option value="5">5 次</option>
+            </select>
+          </label>
+          <label>句间
+            <select id="lpPauseDuration" aria-label="句间停顿">
+              <option value="0">不停顿</option><option value="500">0.5 秒</option><option value="1000">1 秒</option><option value="2000">2 秒</option>
+            </select>
+          </label>
+          <button id="lpLoopBtn" aria-pressed="false" title="持续循环当前句，快捷键 L">单句循环</button>
+          <span class="lp-shortcuts">Space 播放 · ←/→ 切句 · R 复读 · L 循环 · 1–4 阶段</span>
+        </div>
         <div class="lp-prepare" id="lpPrepare" hidden>
           <div class="lp-prepare-head">
             <span class="lp-prepare-stage" id="lpPrepareStage">准备整篇音频…</span>
@@ -93,6 +115,6 @@
       </footer>
 
     </div>
-    <script src="/static/listen.js?v=20260826"></script>
+    <script src="/static/listen.js?v=20260828"></script>
   </body>
 </html>
