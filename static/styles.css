@@ -413,6 +413,53 @@ body { font-feature-settings: "ss01", "cv11"; }
   box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 38%,transparent);
 }
 .reader .sent.audio-current::selection { background:var(--accent); color:var(--paper); }
+
+.reader .word-token { display:inline; padding:0; border:0; background:transparent; color:inherit; font:inherit; letter-spacing:inherit; cursor:help; text-align:inherit; }
+.reader .word-token:hover,.reader .word-token:focus-visible { color:var(--accent); text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:3px; outline:none; }
+
+.wide-dialog { width:min(1080px,calc(100vw - 24px)); max-width:none; }
+.issue-file-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+.issue-file-card { display:grid; gap:7px; padding:18px; border:1px dashed var(--line); border-radius:var(--radius-lg); background:var(--paper-2); }
+.issue-file-card strong { font-size:15px; }
+.issue-file-card span { color:var(--muted); font-size:12px; }
+.issue-file-card input { width:100%; }
+.issue-progress { display:grid; gap:9px; margin:18px 0; }
+.issue-progress-bar { height:8px; overflow:hidden; border-radius:999px; background:var(--line); }
+.issue-progress-bar span { display:block; width:8%; height:100%; border-radius:inherit; background:var(--accent); transition:width .35s ease; }
+.pairing-table-wrap { max-height:48vh; overflow:auto; border:1px solid var(--line); border-radius:var(--radius-md); }
+.issue-pair-table { width:100%; border-collapse:collapse; font-size:12px; }
+.issue-pair-table th,.issue-pair-table td { padding:10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+.issue-pair-table th { position:sticky; top:0; z-index:1; background:var(--paper-2); }
+.issue-pair-table select { width:100%; max-width:310px; }
+.confidence-pill { display:inline-block; min-width:48px; padding:3px 7px; border-radius:999px; background:var(--warn-soft); font:11px var(--mono); text-align:center; }
+.confidence-pill.good { background:var(--good-soft); color:var(--good); }
+
+.dictionary-dialog { width:min(500px,calc(100vw - 24px)); }
+.dictionary-headword { display:flex; align-items:baseline; gap:10px; margin-bottom:12px; }
+.dictionary-headword strong { font:700 28px var(--serif); }
+.dictionary-headword span { color:var(--muted); }
+.dictionary-definition { display:grid; gap:8px; line-height:1.65; }
+.dictionary-context { margin-top:14px; padding:12px; border-left:3px solid var(--accent); background:var(--paper-2); font:14px var(--serif); }
+
+.vocab-toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
+.vocab-toolbar input { flex:1; min-width:180px; }
+.vocabulary-library-list { display:grid; gap:8px; max-height:58vh; overflow:auto; }
+.vocabulary-entry { display:grid; grid-template-columns:minmax(150px,.8fr) minmax(220px,2fr) auto; gap:12px; align-items:start; padding:12px 14px; border:1px solid var(--line); border-radius:var(--radius-md); }
+.vocabulary-entry .term { font:700 19px var(--serif); }
+.vocabulary-entry .term small { display:block; margin-top:3px; color:var(--muted); font:11px var(--mono); }
+.vocabulary-entry .meaning { line-height:1.55; }
+.vocabulary-entry .context { margin-top:4px; color:var(--muted); font-size:12px; }
+.vocabulary-review-card { display:grid; place-items:center; min-height:310px; padding:30px; border:1px solid var(--line); border-radius:var(--radius-lg); text-align:center; background:var(--paper-2); }
+.vocabulary-review-card .front { font:700 38px var(--serif); }
+.vocabulary-review-card .answer { margin:18px 0; font-size:16px; line-height:1.7; }
+.review-rating-row { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
+
+@media (max-width:720px) {
+  .issue-file-grid { grid-template-columns:1fr; }
+  .vocabulary-entry { grid-template-columns:1fr auto; }
+  .vocabulary-entry .meaning { grid-column:1 / -1; grid-row:2; }
+  .issue-pair-table th:nth-child(4),.issue-pair-table td:nth-child(4) { display:none; }
+}
 .reader .sent.long {
   border-bottom: 1px dotted var(--accent);
 }
@@ -1507,11 +1554,12 @@ dialog::backdrop { background: rgba(15, 18, 22, 0.5); }
   margin-bottom: 12px;
 }
 
-.article-audio-dock { position:fixed; z-index:70; left:calc(var(--rail-w) + 18px); right:18px; bottom:18px; display:grid; grid-template-columns:minmax(180px,1fr) minmax(320px,2fr) auto auto; align-items:center; gap:14px; padding:12px 14px; border:1px solid var(--dock-line); border-radius:var(--radius-lg); background:var(--dock); color:var(--dock-ink); box-shadow:var(--shadow-dock); }
+.article-audio-dock { position:fixed; z-index:70; left:calc(var(--rail-w) + 18px); right:18px; bottom:18px; display:grid; grid-template-columns:minmax(180px,1fr) minmax(320px,2fr) auto auto auto; align-items:center; gap:14px; padding:12px 14px; border:1px solid var(--dock-line); border-radius:var(--radius-lg); background:var(--dock); color:var(--dock-ink); box-shadow:var(--shadow-dock); }
 .article-audio-dock[hidden] { display:none; }
 .article-audio-dock strong,.article-audio-dock small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .article-audio-dock small { margin-top:4px; color:var(--dock-muted); font:10px var(--mono); }
 .article-audio-dock audio { width:100%; height:38px; }
+.article-audio-dock select { min-width:76px; color:var(--dock-ink); border-color:var(--dock-line); background:var(--dock); }
 .article-audio-dock .btn { color:var(--dock-ink); border-color:var(--dock-line); text-decoration:none; }
 
 /* responsive */
@@ -1540,6 +1588,7 @@ dialog::backdrop { background: rgba(15, 18, 22, 0.5); }
   .article-audio-dock { left:8px; right:8px; bottom:72px; grid-template-columns:minmax(0,1fr) auto; gap:8px; padding:10px; }
   .article-audio-dock>div { grid-column:1; }
   .article-audio-dock audio { grid-column:1 / -1; grid-row:2; }
+  .article-audio-dock select { grid-column:2; grid-row:1; }
   .article-audio-dock #articleAudioLibraryLink { display:none; }
 }
 

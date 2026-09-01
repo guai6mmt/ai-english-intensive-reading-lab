@@ -10,7 +10,9 @@ import sqlite3
 import subprocess
 import threading
 import uuid
+import zipfile
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
@@ -291,6 +293,84 @@ def _finish_job(job_id: str, message: str = "导入任务完成") -> None:
                WHERE id = ?""",
             (message, now, now, job_id),
         )
+
+
+def import_audio_zip(archive_path: Path, user_id: str, collection_name: str) -> dict[str, Any]:
+    """Safely import supported audio members from a ZIP into one collection.
+
+    Members are streamed one at a time into the managed staging directory.  No
+    archive path is ever used as a filesystem destination, which prevents ZIP
+    traversal and keeps cleanup bounded to one explicit staging file.
+    """
+    if not zipfile.is_zipfile(archive_path):
+        raise ValueError("音频压缩包不是有效的 ZIP 文件")
+    safe_collection = re.sub(r"[\\/:*?\"<>|]+", " ", collection_name).strip(" .")[:240] or "Audio issue"
+    max_members = 10_000
+    max_expanded = max(config.max_upload_bytes * 3, 2 * 1024 * 1024 * 1024)
+    with zipfile.ZipFile(archive_path) as archive:
+        infos = []
+        total_expanded = 0
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            member = PurePosixPath(info.filename.replace("\\", "/"))
+            if member.is_absolute() or ".." in member.parts:
+                raise ValueError("压缩包包含不安全的文件路径")
+            extension = Path(member.name).suffix.lower()
+            if extension not in SUPPORTED_AUDIO_EXTENSIONS:
+                continue
+            if info.file_size <= 0 or info.file_size > config.max_upload_bytes:
+                raise ValueError(f"压缩包中的 {member.name} 大小超出限制")
+            if info.compress_size > 0 and info.file_size > 10 * 1024 * 1024 and info.file_size / info.compress_size > 250:
+                raise ValueError(f"压缩包中的 {member.name} 压缩比异常")
+            total_expanded += info.file_size
+            if total_expanded > max_expanded:
+                raise ValueError("压缩包解压后的总大小超出限制")
+            infos.append((info, member))
+            if len(infos) > max_members:
+                raise ValueError("压缩包中的音频文件数量超出限制")
+        if not infos:
+            raise ValueError("压缩包中没有找到支持的音频文件")
+        job_id = _create_job(user_id, "zip", archive_path.name, len(infos))
+        media_ids: list[str] = []
+        try:
+            for info, member in infos:
+                extension = Path(member.name).suffix.lower()
+                staging = config.media_root / "staging" / f"{uuid.uuid4().hex}{extension}"
+                written = 0
+                try:
+                    with archive.open(info) as source, staging.open("wb") as destination:
+                        while chunk := source.read(1024 * 1024):
+                            written += len(chunk)
+                            if written > info.file_size or written > config.max_upload_bytes:
+                                raise ValueError("解压数据超过声明大小")
+                            destination.write(chunk)
+                    if written != info.file_size:
+                        raise ValueError("解压后的文件大小不完整")
+                    relative = f"{safe_collection}/{member.name}"
+                    status, media_id, message = _import_local_file(staging, relative, move_source=True)
+                    _record_job_item(job_id, relative, status, media_id, message)
+                    if media_id:
+                        media_ids.append(media_id)
+                except Exception as exc:
+                    staging.unlink(missing_ok=True)
+                    _record_job_item(job_id, f"{safe_collection}/{member.name}", "failed", None, str(exc)[:1000])
+            _finish_job(job_id, "ZIP 音频包导入完成")
+        except Exception:
+            _finish_job(job_id, "ZIP 音频包导入中止")
+            raise
+
+    with connect() as connection:
+        row = connection.execute("SELECT id, name FROM collections WHERE name = ?", (safe_collection,)).fetchone()
+    if not row:
+        raise ValueError("音频已经处理，但未能创建集合")
+    return {
+        "job_id": job_id,
+        "collection_id": row["id"],
+        "collection_name": row["name"],
+        "media_ids": media_ids,
+        "total_files": len(infos),
+    }
 
 
 def _job_payload(job_id: str, user_id: str) -> dict[str, Any]:

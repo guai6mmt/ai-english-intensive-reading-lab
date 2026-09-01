@@ -10,7 +10,7 @@ from .config import config, ensure_server_dirs
 
 
 BASE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     2: (
@@ -76,6 +76,67 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
     5: (
         "ALTER TABLE listening_sentence_progress ADD COLUMN last_dictation_score REAL",
         "ALTER TABLE listening_sentence_progress ADD COLUMN shadowing_rating INTEGER",
+    ),
+    6: (
+        """CREATE TABLE IF NOT EXISTS vocabulary_entries (
+               id TEXT PRIMARY KEY,
+               user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+               term TEXT NOT NULL,
+               normalized_term TEXT NOT NULL,
+               lemma TEXT NOT NULL DEFAULT '',
+               phonetic TEXT NOT NULL DEFAULT '',
+               part_of_speech TEXT NOT NULL DEFAULT '',
+               definition TEXT NOT NULL DEFAULT '',
+               translation TEXT NOT NULL DEFAULT '',
+               kind TEXT NOT NULL DEFAULT 'word',
+               layer TEXT NOT NULL DEFAULT '',
+               notes TEXT NOT NULL DEFAULT '',
+               mastery TEXT NOT NULL DEFAULT 'new',
+               encounter_count INTEGER NOT NULL DEFAULT 1,
+               enrich_status TEXT NOT NULL DEFAULT 'pending',
+               tier INTEGER NOT NULL DEFAULT 0,
+               due_at TEXT NOT NULL,
+               reps INTEGER NOT NULL DEFAULT 0,
+               lapses INTEGER NOT NULL DEFAULT 0,
+               stability REAL NOT NULL DEFAULT 0,
+               difficulty REAL NOT NULL DEFAULT 5,
+               state INTEGER NOT NULL DEFAULT 0,
+               scheduled_days INTEGER NOT NULL DEFAULT 0,
+               last_review TEXT,
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL,
+               UNIQUE(user_id, normalized_term)
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_vocab_due ON vocabulary_entries(user_id, due_at, mastery)",
+        "CREATE INDEX IF NOT EXISTS idx_vocab_term ON vocabulary_entries(user_id, normalized_term)",
+        """CREATE TABLE IF NOT EXISTS vocabulary_contexts (
+               id TEXT PRIMARY KEY,
+               entry_id TEXT NOT NULL REFERENCES vocabulary_entries(id) ON DELETE CASCADE,
+               article_id TEXT,
+               sentence_id TEXT NOT NULL DEFAULT '',
+               context TEXT NOT NULL,
+               source TEXT NOT NULL DEFAULT '',
+               created_at TEXT NOT NULL,
+               UNIQUE(entry_id, article_id, sentence_id, context)
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_vocab_context_entry ON vocabulary_contexts(entry_id, created_at)",
+        """CREATE TABLE IF NOT EXISTS vocabulary_review_log (
+               id TEXT PRIMARY KEY,
+               entry_id TEXT NOT NULL REFERENCES vocabulary_entries(id) ON DELETE CASCADE,
+               user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+               rating TEXT NOT NULL,
+               mode TEXT NOT NULL DEFAULT 'adaptive',
+               interval_before INTEGER NOT NULL DEFAULT 0,
+               interval_after INTEGER NOT NULL DEFAULT 0,
+               reviewed_at TEXT NOT NULL
+           )""",
+        "CREATE INDEX IF NOT EXISTS idx_vocab_review_time ON vocabulary_review_log(user_id, reviewed_at)",
+        """CREATE TABLE IF NOT EXISTS dictionary_cache (
+               normalized_term TEXT PRIMARY KEY,
+               payload_json TEXT NOT NULL,
+               provider TEXT NOT NULL DEFAULT 'local',
+               updated_at TEXT NOT NULL
+           )""",
     ),
 }
 

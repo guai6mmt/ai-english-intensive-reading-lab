@@ -30,7 +30,7 @@ from typing import Any, Callable
 from bs4 import BeautifulSoup
 from cryptography.fernet import Fernet, InvalidToken
 from docx import Document
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -59,7 +59,6 @@ COVERS_DIR = DATA_DIR / "covers"
 VIDEO_EXPORT_DIR = DATA_DIR / "video_export"
 STATIC_DIR = ROOT / "static"
 LIBRARY_PATH = DATA_DIR / "library.json"
-VOCAB_PATH = DATA_DIR / "vocabulary.json"
 OUTPUTS_PATH = DATA_DIR / "outputs.json"
 PROGRESS_PATH = DATA_DIR / "progress.json"
 SETTINGS_PATH = DATA_DIR / "settings.json"
@@ -213,13 +212,9 @@ class SaveOutputRequest(BaseModel):
     feedback: Any | None = None
 
 
-class VocabRequest(BaseModel):
-    article_id: str | None = None
+class DictionaryLookupRequest(BaseModel):
     term: str
-    translation: str | None = None
-    context: str | None = None
-    kind: str = "word"
-    layer: str | None = None
+    context: str = ""
 
 
 class ProgressRequest(BaseModel):
@@ -724,6 +719,13 @@ def oss_config() -> dict[str, str]:
 
 def clean_text(text: str) -> str:
     text = html.unescape(text or "")
+    mojibake = {
+        "â€™": "’", "â€˜": "‘", "â€œ": "“", "â€": "”",
+        "â€“": "–", "â€”": "—", "Â·": "·", "Â": "",
+    }
+    for broken, repaired in mojibake.items():
+        text = text.replace(broken, repaired)
+    text = re.sub(r"\ufffd{1,2}", "’", text)
     text = text.replace("\u00a0", " ")
     text = re.sub(r"[ \t]+", " ", text)
     return text.strip()
@@ -929,7 +931,7 @@ def extract_epub_articles(path: Path, source_id: str) -> list[dict[str, Any]]:
             feed_num = m.group(2)
             if feed_num in feed_sections:
                 continue
-            raw = book.read(idx_name).decode("utf-8", errors="ignore")
+            raw = decode_epub_markup(book.read(idx_name))
             soup = BeautifulSoup(raw, "html.parser")
             headings = [clean_text(h.get_text(" ")) for h in soup.find_all(["h1", "h2", "h3"])]
             headings = [h for h in headings if h and h.lower() not in {"unknown", "未知"}]
@@ -943,7 +945,7 @@ def extract_epub_articles(path: Path, source_id: str) -> list[dict[str, Any]]:
             html_names = [n for n in names if n.lower().endswith((".html", ".xhtml"))]
             require_article_path = False
         for index, name in enumerate(html_names, 1):
-            raw = book.read(name).decode("utf-8", errors="ignore")
+            raw = decode_epub_markup(book.read(name))
             soup = BeautifulSoup(raw, "html.parser")
             for tag in soup(["script", "style", "nav", "footer"]):
                 tag.decompose()
@@ -979,6 +981,25 @@ def extract_epub_articles(path: Path, source_id: str) -> list[dict[str, Any]]:
             }
             articles.append(enrich_article(article))
     return articles
+
+
+def decode_epub_markup(data: bytes) -> str:
+    """Decode EPUB markup while tolerating mislabelled legacy feeds."""
+    head = data[:512].decode("ascii", errors="ignore")
+    match = re.search(r"encoding=[\"']\s*([^\"']+)", head, re.I)
+    candidates = [match.group(1).strip()] if match else []
+    candidates.extend(["utf-8-sig", "utf-8", "windows-1252"])
+    seen: set[str] = set()
+    for encoding in candidates:
+        key = encoding.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            return data.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return data.decode("utf-8", errors="replace")
 
 
 def extract_docx_articles(path: Path, source_id: str) -> list[dict[str, Any]]:
@@ -2974,6 +2995,60 @@ async def upload_file(file: UploadFile = File(...)) -> dict[str, Any]:
     return {"source": source, "summary": library_summary(library)}
 
 
+@app.post("/api/issues/import")
+async def import_issue_bundle(
+    request: Request,
+    epub: UploadFile = File(...),
+    audio_zip: UploadFile | None = File(default=None),
+) -> dict[str, Any]:
+    """Import one publication issue and its optional ZIP audio edition.
+
+    The article import remains the source of truth, so duplicate EPUB uploads
+    are idempotent.  Audio members are validated and imported through the same
+    managed-media path as browser folder uploads.
+    """
+    user = request.state.user
+    if not user:
+        raise HTTPException(401, "请先登录。")
+    if Path(epub.filename or "").suffix.lower() != ".epub":
+        raise HTTPException(400, "一期合并导入目前需要 EPUB 文章文件。")
+    article_result = await upload_file(epub)
+    source = article_result["source"]
+    result: dict[str, Any] = {
+        "source": slim_library({"sources": [source]})["sources"][0],
+        "duplicate": bool(article_result.get("duplicate")),
+        "summary": article_result.get("summary", {}),
+        "audio": None,
+        "pairing": None,
+    }
+    if audio_zip is None or not audio_zip.filename:
+        return result
+    if Path(audio_zip.filename).suffix.lower() != ".zip":
+        raise HTTPException(400, "音频压缩包请使用 ZIP 格式；也可以在音频库直接选择文件夹。")
+    archive_name = re.sub(r"[^A-Za-z0-9_.\-\u4e00-\u9fff]", "_", audio_zip.filename)[:180]
+    archive_path = UPLOAD_DIR / f"issue_{uuid.uuid4().hex}_{archive_name}"
+    total = 0
+    try:
+        with archive_path.open("wb") as output:
+            while chunk := await audio_zip.read(1024 * 1024):
+                total += len(chunk)
+                if total > server_config.max_upload_bytes:
+                    raise HTTPException(413, "ZIP 压缩包超过服务器允许的最大大小。")
+                output.write(chunk)
+        collection_name = f"{Path(str(source.get('filename') or audio_zip.filename)).stem} Audio"
+        audio_result = import_audio_zip(archive_path, user["id"], collection_name)
+        result["audio"] = audio_result
+        result["pairing"] = preview_content_pairing(source["id"], audio_result["collection_id"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, f"音频 ZIP 导入失败：{str(exc)[:500]}") from exc
+    finally:
+        archive_path.unlink(missing_ok=True)
+        await audio_zip.close()
+
+
 _AI_PRESERVE_FIELDS = [
     "overview", "paragraph_analysis", "vocabulary_analysis",
     "long_sentence_analysis", "reading_questions", "text_check",
@@ -4831,40 +4906,51 @@ def get_learning_pack(article_id: str, request: PackRequest) -> dict[str, Any]:
     return {"pack": pack}
 
 
-@app.get("/api/vocabulary")
-def get_vocabulary() -> dict[str, Any]:
-    return {"items": load_json(VOCAB_PATH, [])}
-
-
-@app.post("/api/vocabulary")
-def add_vocabulary(item: VocabRequest) -> dict[str, Any]:
-    items = load_json(VOCAB_PATH, [])
-    key = item.term.strip().lower()
-    existing = next((v for v in items if v["term"].lower() == key), None)
-    if existing:
-        existing["updated_at"] = now_iso()
-        if item.context:
-            existing.setdefault("contexts", []).append(item.context)
-    else:
-        existing = {
-            "id": stable_id(key, str(time.time())),
-            "term": item.term.strip(),
-            "translation": item.translation or MINI_GLOSSARY.get(key, ""),
-            "kind": item.kind,
-            "layer": item.layer or "未分层",
-            "article_id": item.article_id,
-            "contexts": [item.context] if item.context else [],
-            "recognise": False,
-            "hear": False,
-            "speak": False,
-            "write": False,
-            "review_count": 0,
-            "created_at": now_iso(),
-            "updated_at": now_iso(),
-        }
-        items.append(existing)
-    save_json(VOCAB_PATH, items)
-    return {"item": existing, "items": items}
+@app.post("/api/dictionary/lookup")
+def dictionary_lookup(spec: DictionaryLookupRequest, request: Request) -> dict[str, Any]:
+    user = request.state.user
+    if not user:
+        raise HTTPException(401, "请先登录。")
+    term = clean_text(spec.term)[:200]
+    if not re.search(r"[A-Za-z]", term):
+        raise HTTPException(400, "请选择英文单词或短语。")
+    local = vocabulary_lookup_payload(user["id"], term)
+    item = local["item"]
+    if local.get("found"):
+        return {**local, "meta": {"used_ai": False, "provider": local.get("provider", "local")}}
+    fallback = {
+        "term": term,
+        "normalized_term": re.sub(r"[^a-z'-]", "", term.lower()),
+        "lemma": item.get("lemma") or term.lower(),
+        "phonetic": "",
+        "part_of_speech": "",
+        "definition": "",
+        "translation": "暂未查到本地释义，可直接加入生词本后编辑。",
+        "context_note": "",
+    }
+    result, meta = call_ai_json(
+        task_provider("text"),
+        "你是英汉学习词典。只返回JSON，不要使用Markdown。",
+        "请结合语境查询词语，返回字段 term, lemma, phonetic, part_of_speech, "
+        "definition（简明英文释义）, translation（准确中文义）, context_note（本句中的含义或用法）。\n"
+        f"词语：{term}\n语境：{clean_text(spec.context)[:1200]}",
+        fallback,
+    )
+    if not isinstance(result, dict):
+        result = fallback
+    normalized = {
+        "term": clean_text(str(result.get("term") or term)),
+        "normalized_term": fallback["normalized_term"],
+        "lemma": clean_text(str(result.get("lemma") or fallback["lemma"])),
+        "phonetic": clean_text(str(result.get("phonetic") or "")),
+        "part_of_speech": clean_text(str(result.get("part_of_speech") or "")),
+        "definition": clean_text(str(result.get("definition") or "")),
+        "translation": clean_text(str(result.get("translation") or fallback["translation"])),
+        "context_note": clean_text(str(result.get("context_note") or "")),
+    }
+    if meta.get("used_ai"):
+        cache_vocabulary_lookup(term, normalized, str(meta.get("provider") or "ai"))
+    return {"found": bool(meta.get("used_ai")), "saved": False, "item": normalized, "meta": meta}
 
 
 @app.post("/api/outputs")
@@ -4949,15 +5035,21 @@ VIDEO_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 # routes remain compatible while authentication and the media library evolve.
 from english_lab.auth import SessionAuthMiddleware, router as auth_router  # noqa: E402
 from english_lab.health import router as health_router  # noqa: E402
-from english_lab.media import router as media_router  # noqa: E402
+from english_lab.media import import_audio_zip, router as media_router  # noqa: E402
 from english_lab.content_links import (  # noqa: E402
     linked_media_for_article,
     linked_media_source_for_article,
     linked_media_summaries,
+    preview_content_pairing,
     remove_source_links,
     router as content_links_router,
 )
 from english_lab.listening_practice import router as listening_practice_router  # noqa: E402
+from english_lab.vocabulary import (  # noqa: E402
+    cache_lookup as cache_vocabulary_lookup,
+    lookup_payload as vocabulary_lookup_payload,
+    router as vocabulary_router,
+)
 from english_lab.webdav import router as webdav_api_router, webdav_routes  # noqa: E402
 
 app.include_router(health_router)
@@ -4965,6 +5057,7 @@ app.include_router(auth_router)
 app.include_router(media_router)
 app.include_router(content_links_router)
 app.include_router(listening_practice_router)
+app.include_router(vocabulary_router)
 app.include_router(webdav_api_router)
 app.router.routes.extend(webdav_routes)
 app.add_middleware(SessionAuthMiddleware)

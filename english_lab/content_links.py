@@ -98,6 +98,26 @@ def _title_score(article_title: str, audio_label: str) -> float:
     return max(sequence, overlap)
 
 
+def _duration_score(article: dict[str, Any], media: dict[str, Any]) -> float:
+    """Return plausibility of the spoken duration for the article word count."""
+    stats = article.get("cleaned_stats") or article.get("stats") or {}
+    try:
+        word_count = int(stats.get("word_count") or 0)
+        minutes = float(media.get("duration_ms") or 0) / 60_000
+    except (TypeError, ValueError):
+        return 0.0
+    if word_count < 80 or minutes <= 0:
+        return 0.0
+    words_per_minute = word_count / minutes
+    if 125 <= words_per_minute <= 205:
+        return 1.0
+    if 95 <= words_per_minute < 125 or 205 < words_per_minute <= 235:
+        return 0.65
+    if 70 <= words_per_minute < 95 or 235 < words_per_minute <= 270:
+        return 0.3
+    return 0.0
+
+
 def _collection_items(collection_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     with connect() as connection:
         collection = connection.execute("SELECT * FROM collections WHERE id = ?", (collection_id,)).fetchone()
@@ -156,11 +176,16 @@ def _automatic_candidates(source: dict[str, Any], collection: dict[str, Any], me
             score = 0.0
             if chosen_index is None and available:
                 ranked = sorted(
-                    ((_title_score(str(article.get("title") or ""), str(item.get("audio_label") or "")), candidate_index)
+                    ((
+                        _title_score(str(article.get("title") or ""), str(item.get("audio_label") or ""))
+                        + _duration_score(article, item) * 0.18
+                        + (0.08 if candidate_index == index else 0.0),
+                        candidate_index,
+                    )
                      for candidate_index, item in enumerate(available) if candidate_index in unused),
                     reverse=True,
                 )
-                if ranked and ranked[0][0] >= 0.42:
+                if ranked and ranked[0][0] >= 0.38:
                     score, chosen_index = ranked[0]
             if chosen_index is None or chosen_index >= len(available):
                 result.append({
@@ -184,6 +209,13 @@ def _automatic_candidates(source: dict[str, Any], collection: dict[str, Any], me
             if score >= 0.2:
                 confidence += 0.04
                 reason += "，标题关键词相符"
+            duration_score = _duration_score(article, item)
+            if duration_score >= 0.65:
+                confidence += 0.03
+                reason += "，篇幅与时长相符"
+            elif duration_score == 0 and (article.get("stats") or {}).get("word_count") and item.get("duration_ms"):
+                confidence -= 0.08
+                reason += "；篇幅与时长需要复核"
             if item.get("section_inferred"):
                 confidence -= 0.22
                 reason += "；音频栏目由相邻曲目推断"
@@ -244,6 +276,11 @@ def _preview(source_id: str, collection_id: str) -> dict[str, Any]:
         "collection": {"id": collection_id, "name": collection.get("name"), "issue_key": _issue_key(collection.get("name", ""))},
         "candidates": candidates, "media_options": media_options, "summary": summary,
     }
+
+
+def preview_content_pairing(source_id: str, collection_id: str) -> dict[str, Any]:
+    """Public service entry point used by the unified issue importer."""
+    return _preview(source_id, collection_id)
 
 
 @router.get("/options")

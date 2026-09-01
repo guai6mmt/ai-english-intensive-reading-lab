@@ -642,4 +642,8 @@ if ("mediaSession" in navigator) {
   navigator.mediaSession.setActionHandler("nexttrack", () => moveTrack(1));
 }
 
-window.EnglishLabAuth.ready.then((session) => { $("userBtn").textContent = session.user.username.slice(0,1).toUpperCase(); loadData(); });
+window.EnglishLabAuth.ready.then((session) => {
+  $("userBtn").textContent = session.user.username.slice(0,1).toUpperCase();
+  loadData();
+  if (new URLSearchParams(location.search).get("import") === "folder") $("importDialog").showModal();
+});

@@ -10,6 +10,7 @@ const STEPS = [
 
 const TWEAK_KEY = "english-lab-tweaks-v1";
 const MEDIA_PLAYBACK_KEY = "el_media_playback_v1";
+const OFFLINE_ACTIONS_KEY = "english-lab-offline-actions-v1";
 const TWEAK_DEFAULTS = { density: "normal", readerSize: 18, showSide: true, showRail: true };
 
 const state = {
@@ -53,6 +54,9 @@ const state = {
     alignmentLoading: false,
     alignmentAttempted: false,
   },
+  issueImport: { source: null, collection: null, candidates: [], media: [] },
+  dictionary: { item: null, context: "", sentenceId: "" },
+  vocabularyReview: { queue: [], index: 0, revealed: false },
 };
 
 // ───────── Utilities ─────────
@@ -103,6 +107,8 @@ async function api(path, options = {}) {
   try {
     response = await fetch(path, options);
   } catch {
+    const queued = queueOfflineAction(path, options);
+    if (queued) return queued;
     throw new Error("网络连接失败，请检查服务是否运行。");
   }
   const text = await response.text();
@@ -111,6 +117,42 @@ async function api(path, options = {}) {
   catch { throw new Error(`服务器返回无效响应 (${response.status})`); }
   if (!response.ok) throw new Error(data.detail || `请求失败 (${response.status})`);
   return data;
+}
+
+function queueOfflineAction(path, options) {
+  const method = String(options.method || "GET").toUpperCase();
+  const allowed = method !== "GET" && typeof options.body === "string" && (
+    path === "/api/vocabulary" || path.startsWith("/api/vocabulary/review/") ||
+    path === "/api/progress" || /\/api\/v1\/media\/items\/[^/]+\/progress$/.test(path)
+  );
+  if (!allowed) return null;
+  let queue;
+  try { queue = JSON.parse(localStorage.getItem(OFFLINE_ACTIONS_KEY) || "[]"); }
+  catch { queue = []; }
+  const action = { id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`, path, method, body: options.body, createdAt: new Date().toISOString() };
+  queue.push(action);
+  localStorage.setItem(OFFLINE_ACTIONS_KEY, JSON.stringify(queue.slice(-500)));
+  let item = null;
+  if (path === "/api/vocabulary") {
+    try { item = { id: `offline-${action.id}`, ...JSON.parse(options.body), encounter_count: 1, mastery: "new", due_at: new Date().toISOString().slice(0, 10) }; }
+    catch {}
+  }
+  return { queued: true, offline: true, item };
+}
+
+async function flushOfflineActions() {
+  let queue;
+  try { queue = JSON.parse(localStorage.getItem(OFFLINE_ACTIONS_KEY) || "[]"); }
+  catch { queue = []; }
+  if (!Array.isArray(queue) || !queue.length || !navigator.onLine) return;
+  const remaining = [];
+  for (const action of queue) {
+    try {
+      const response = await fetch(action.path, { method: action.method, headers: { "Content-Type": "application/json" }, body: action.body });
+      if (!response.ok) remaining.push(action);
+    } catch { remaining.push(action); }
+  }
+  localStorage.setItem(OFFLINE_ACTIONS_KEY, JSON.stringify(remaining));
 }
 
 async function runAction(button, label, action) {
@@ -713,8 +755,7 @@ function syncOriginalAudioHighlight() {
     rebuildOriginalAudioTimeline();
   }
   const time = player.currentTime || 0;
-  const current = state.originalAudio.timeline.find((entry) => time >= entry.start && time < entry.end)
-    || state.originalAudio.timeline.at(-1);
+  const current = timelineEntryAt(state.originalAudio.timeline, time) || state.originalAudio.timeline.at(-1);
   const currentElement = current
     ? document.querySelector(`#readerEl .sent[data-sid="${CSS.escape(current.sid)}"]`)
     : null;
@@ -728,6 +769,18 @@ function syncOriginalAudioHighlight() {
   element?.setAttribute("aria-current", "true");
   state.originalAudio.currentSentenceId = current.sid;
   if (!player.paused) revealAudioSentence(element);
+}
+
+function timelineEntryAt(timeline, time) {
+  let low = 0, high = timeline.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const entry = timeline[middle];
+    if (time < entry.start) high = middle - 1;
+    else if (time >= entry.end) low = middle + 1;
+    else return entry;
+  }
+  return null;
 }
 
 function persistOriginalAudioPlayback() {
@@ -790,6 +843,7 @@ async function playOriginalArticleAudio(options = {}) {
     state.originalAudio.alignmentAttempted = false;
   }
   player.playbackRate = Number.isFinite(rate) ? Math.max(0.5, Math.min(3, rate)) : 1;
+  if ($("articleAudioRate")) $("articleAudioRate").value = String([...$("articleAudioRate").options].some((option) => Number(option.value) === player.playbackRate) ? player.playbackRate : 1);
   const applyPosition = () => {
     if (Number.isFinite(positionMs) && positionMs > 0 && (!player.duration || positionMs < player.duration * 1000 - 1000)) {
       player.currentTime = positionMs / 1000;
@@ -1014,6 +1068,7 @@ function renderReader(container) {
           <button data-size="+1" title="字号 +">A+</button>
         </div>
         <button class="btn ghost" id="readAllBtn" title="朗读全文">♪ 朗读全文</button>
+        <button class="btn ghost" id="offlineArticleBtn" title="将本文和原版音频保存到本设备">${isArticleOffline(article.id) ? "✓ 已离线" : "↓ 离线保存"}</button>
         ${state.step === "text" ? `<button class="btn" id="runTextCheckBtn">↻ AI 文本检查</button>` : ""}
         ${state.step === "text" ? `<button class="btn" id="exportAudioBtn" title="将文章导出为音频文件（含提示音+标题）">⬇ 生成音频</button>` : ""}
         ${state.step === "long" ? `<button class="btn" id="runLongSentenceBtn">⊕ 生成长难句</button>` : ""}
@@ -1037,7 +1092,7 @@ function renderSentencesHtml(paragraph, longSet, paraIdx) {
   const chunks = splitSentences(paragraph);
   if (!chunks.length) {
     const trimmed = paragraph.trim();
-    return `<span class="sent" data-sentence="${escapeHtml(trimmed)}" data-sid="p${paraIdx}-s0">${escapeHtml(trimmed)} </span>`;
+    return `<span class="sent" data-sentence="${escapeHtml(trimmed)}" data-sid="p${paraIdx}-s0">${renderWordTokens(trimmed)} </span>`;
   }
   return chunks.map((sentence, i) => {
     const clean = sentence.trim();
@@ -1047,7 +1102,14 @@ function renderSentencesHtml(paragraph, longSet, paraIdx) {
     const cls = ["sent"];
     if (isLong) cls.push("long");
     if (state.activeSentenceId === sid) cls.push("active");
-    return `<span class="${cls.join(" ")}" data-sentence="${escapeHtml(clean)}" data-sid="${sid}">${escapeHtml(clean)} </span>`;
+    return `<span class="${cls.join(" ")}" data-sentence="${escapeHtml(clean)}" data-sid="${sid}">${renderWordTokens(clean)} </span>`;
+  }).join("");
+}
+
+function renderWordTokens(text) {
+  return String(text || "").split(/([A-Za-z]+(?:[’'-][A-Za-z]+)*)/g).map((part) => {
+    if (!/^[A-Za-z]+(?:[’'-][A-Za-z]+)*$/.test(part)) return escapeHtml(part);
+    return `<button type="button" class="word-token" data-word="${escapeHtml(part)}" aria-label="查询 ${escapeHtml(part)}">${escapeHtml(part)}</button>`;
   }).join("");
 }
 
@@ -2000,6 +2062,238 @@ async function reloadCurrentArticle() {
   renderRail();
 }
 
+// ───────── Issue import / dictionary / vocabulary / offline packs ─────────
+const OFFLINE_ARTICLES_KEY = "english-lab-offline-articles-v1";
+
+function offlineArticleIds() {
+  try { return new Set(JSON.parse(localStorage.getItem(OFFLINE_ARTICLES_KEY) || "[]")); }
+  catch { return new Set(); }
+}
+
+function isArticleOffline(articleId) { return offlineArticleIds().has(articleId); }
+
+async function sendServiceWorkerMessage(message) {
+  if (!("serviceWorker" in navigator)) throw new Error("当前浏览器不支持离线保存。");
+  const registration = await navigator.serviceWorker.ready;
+  const worker = registration.active || registration.waiting || registration.installing;
+  if (!worker) throw new Error("离线服务尚未就绪，请刷新页面后重试。");
+  return new Promise((resolve, reject) => {
+    const channel = new MessageChannel();
+    const timeout = setTimeout(() => reject(new Error("离线保存超时。")), 180000);
+    channel.port1.onmessage = (event) => {
+      clearTimeout(timeout);
+      if (event.data?.ok) resolve(event.data);
+      else reject(new Error(event.data?.error || "离线保存失败。"));
+    };
+    worker.postMessage(message, [channel.port2]);
+  });
+}
+
+async function toggleOfflineArticle(button) {
+  const article = state.currentArticle;
+  if (!article) return;
+  const ids = offlineArticleIds();
+  const remove = ids.has(article.id);
+  button.disabled = true;
+  button.textContent = remove ? "移除中…" : "保存中…";
+  try {
+    await sendServiceWorkerMessage({
+      type: remove ? "REMOVE_ARTICLE_PACK" : "CACHE_ARTICLE_PACK",
+      articleId: article.id,
+      urls: [`/api/articles/${encodeURIComponent(article.id)}`, article.linked_media?.stream_url].filter(Boolean),
+    });
+    if (remove) ids.delete(article.id); else ids.add(article.id);
+    localStorage.setItem(OFFLINE_ARTICLES_KEY, JSON.stringify([...ids]));
+    button.textContent = remove ? "↓ 离线保存" : "✓ 已离线";
+  } catch (error) {
+    alert(error.message);
+    button.textContent = remove ? "✓ 已离线" : "↓ 离线保存";
+  } finally { button.disabled = false; }
+}
+
+function resetIssueImport() {
+  state.issueImport = { source: null, collection: null, candidates: [], media: [] };
+  $("issueImportForm").reset();
+  $("issueImportProgress").hidden = true;
+  $("issueImportResult").hidden = true;
+  $("confirmIssuePairingBtn").hidden = true;
+  $("startIssueImportBtn").hidden = false;
+  $("issueImportProgressBar").style.width = "8%";
+}
+
+function renderIssuePairing(pairing) {
+  state.issueImport.source = pairing.source;
+  state.issueImport.collection = pairing.collection;
+  state.issueImport.candidates = asArray(pairing.candidates).map((item) => ({ ...item, original_media_id: item.media_id || "" }));
+  state.issueImport.media = asArray(pairing.media_options);
+  const summary = pairing.summary || {};
+  $("issueImportStats").innerHTML = `
+    <div><strong>${summary.articles || 0}</strong><span>文章</span></div>
+    <div><strong>${summary.audio || 0}</strong><span>音频</span></div>
+    <div><strong>${summary.matched || 0}</strong><span>自动匹配</span></div>
+    <div><strong>${summary.review || 0}</strong><span>建议复核</span></div>
+    <div><strong>${summary.unmatched || 0}</strong><span>待手动</span></div>`;
+  $("issuePairBody").innerHTML = state.issueImport.candidates.map((candidate) => {
+    const options = [`<option value="">暂不配对</option>`, ...state.issueImport.media.map((item) =>
+      `<option value="${escapeHtml(item.id)}" ${item.id === candidate.media_id ? "selected" : ""}>${escapeHtml(item.title || item.original_name)}</option>`
+    )].join("");
+    const confidence = Math.round(Number(candidate.confidence || 0) * 100);
+    return `<tr><td><strong>${escapeHtml(candidate.article_title)}</strong><small>${escapeHtml(candidate.section || "")}</small></td>
+      <td><select data-issue-pair="${escapeHtml(candidate.article_id)}">${options}</select></td>
+      <td><span class="confidence-pill ${confidence >= 80 ? "good" : ""}">${confidence}%</span></td>
+      <td>${escapeHtml(candidate.reason || "")}</td></tr>`;
+  }).join("");
+  $("issueImportResult").hidden = false;
+  $("confirmIssuePairingBtn").hidden = false;
+  $("startIssueImportBtn").hidden = true;
+}
+
+async function submitIssueImport() {
+  const epub = $("issueEpubInput").files?.[0];
+  const audioZip = $("issueAudioZipInput").files?.[0];
+  if (!epub) throw new Error("请选择 EPUB 文件。");
+  const form = new FormData();
+  form.append("epub", epub);
+  if (audioZip) form.append("audio_zip", audioZip);
+  $("issueImportProgress").hidden = false;
+  $("issueImportResult").hidden = true;
+  $("startIssueImportBtn").disabled = true;
+  let pct = 8;
+  const timer = setInterval(() => {
+    pct = Math.min(88, pct + Math.max(1, Math.round((90 - pct) / 12)));
+    $("issueImportProgressBar").style.width = `${pct}%`;
+    $("issueImportProgressText").textContent = pct < 35 ? "正在上传文件…" : pct < 70 ? "正在解析 EPUB 与音频…" : "正在生成配对建议…";
+  }, 700);
+  try {
+    const result = await api("/api/issues/import", { method: "POST", body: form });
+    clearInterval(timer);
+    $("issueImportProgressBar").style.width = "100%";
+    $("issueImportProgressText").textContent = result.pairing ? "导入完成，请检查配对。" : "EPUB 导入完成。";
+    if (result.pairing) renderIssuePairing(result.pairing);
+    else {
+      $("issueImportResult").hidden = false;
+      $("issueImportStats").innerHTML = `<div><strong>${result.source?.article_count || 0}</strong><span>文章已导入</span></div>`;
+      $("issuePairBody").innerHTML = "";
+      $("startIssueImportBtn").hidden = true;
+    }
+    await refreshAll();
+  } finally {
+    clearInterval(timer);
+    $("startIssueImportBtn").disabled = false;
+  }
+}
+
+async function confirmIssuePairing() {
+  const sourceId = state.issueImport.source?.id;
+  const collectionId = state.issueImport.collection?.id;
+  if (!sourceId || !collectionId) return;
+  const links = state.issueImport.candidates.filter((item) => item.media_id).map((item) => ({
+    article_id: item.article_id,
+    media_id: item.media_id,
+    match_method: item.media_id === item.original_media_id ? (item.match_method || "automatic") : "manual",
+    confidence: item.media_id === item.original_media_id ? Number(item.confidence || 0) : 1,
+  }));
+  await api("/api/v1/content-links/confirm", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source_id: sourceId, collection_id: collectionId, links }),
+  });
+  await refreshAll();
+  $("issueImportDialog").close();
+  alert(`已保存 ${links.length} 组文章—音频配对。首次播放时会在后台生成精确句子时间轴。`);
+}
+
+async function lookupReaderWord(word, sentence, sentenceId) {
+  state.dictionary = { item: null, context: sentence, sentenceId };
+  $("dictionaryTerm").textContent = word;
+  $("dictionaryBody").innerHTML = `<p class="status-text">正在结合当前句查询…</p>`;
+  $("addDictionaryWordBtn").disabled = true;
+  if (!$("dictionaryDialog").open) $("dictionaryDialog").showModal();
+  try {
+    const data = await api("/api/dictionary/lookup", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ term: word, context: sentence }),
+    });
+    const item = data.item || {};
+    state.dictionary.item = item;
+    $("dictionaryTerm").textContent = item.term || word;
+    $("dictionaryBody").innerHTML = `<div class="dictionary-headword"><strong>${escapeHtml(item.term || word)}</strong><span>${escapeHtml(item.phonetic || "")}</span><span>${escapeHtml(item.part_of_speech || "")}</span></div>
+      <div class="dictionary-definition">${item.translation ? `<p><strong>中文</strong>　${escapeHtml(item.translation)}</p>` : ""}${item.definition ? `<p><strong>Definition</strong>　${escapeHtml(item.definition)}</p>` : ""}${item.context_note ? `<p><strong>语境</strong>　${escapeHtml(item.context_note)}</p>` : ""}</div>
+      <div class="dictionary-context">${escapeHtml(sentence)}</div>`;
+    $("addDictionaryWordBtn").textContent = data.saved ? "已在生词本" : "加入生词本";
+    $("addDictionaryWordBtn").disabled = Boolean(data.saved);
+  } catch (error) {
+    $("dictionaryBody").innerHTML = `<div class="error-state">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function addCurrentDictionaryWord() {
+  const item = state.dictionary.item;
+  if (!item) return;
+  const data = await api("/api/vocabulary", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      article_id: state.currentArticle?.id || null, sentence_id: state.dictionary.sentenceId,
+      term: item.term, lemma: item.lemma || "", phonetic: item.phonetic || "",
+      part_of_speech: item.part_of_speech || "", definition: item.definition || "",
+      translation: item.translation || "", context: state.dictionary.context,
+      source: state.currentArticle?.title || "", kind: String(item.term || "").includes(" ") ? "phrase" : "word",
+    }),
+  });
+  state.vocabulary = [data.item, ...state.vocabulary.filter((entry) => entry.id !== data.item.id)];
+  $("addDictionaryWordBtn").textContent = "已加入";
+  $("addDictionaryWordBtn").disabled = true;
+}
+
+function renderVocabularyList(items) {
+  $("vocabularyLibraryList").innerHTML = items.length ? items.map((item) => `<div class="vocabulary-entry">
+    <div class="term">${escapeHtml(item.term)}<small>${escapeHtml([item.phonetic, item.part_of_speech].filter(Boolean).join(" · "))}</small></div>
+    <div class="meaning">${escapeHtml(item.translation || item.definition || "待补充释义")}<div class="context">${escapeHtml(item.context || "暂无语境")}</div></div>
+    <div><span class="pill-status" data-state="${item.mastery === "mastered" ? "done" : "review"}">${item.mastery === "mastered" ? "已掌握" : `遇见 ${item.encounter_count || 1} 次`}</span><button class="mini" data-vocab-delete="${escapeHtml(item.id)}">删除</button></div>
+  </div>`).join("") : `<div class="rail-empty">还没有生词。阅读文章时点击单词即可查询并加入。</div>`;
+}
+
+async function loadVocabularyLibrary(query = "") {
+  const data = await api(`/api/vocabulary${query ? `?query=${encodeURIComponent(query)}` : ""}`);
+  state.vocabulary = asArray(data.items);
+  const summary = data.summary || {};
+  $("vocabularySummary").textContent = `共 ${summary.total || 0} 条 · 今日待复习 ${summary.due || 0} · 已掌握 ${summary.mastered || 0}`;
+  renderVocabularyList(state.vocabulary);
+  return data;
+}
+
+function renderVocabularyReview() {
+  const area = $("vocabularyReviewArea");
+  const review = state.vocabularyReview;
+  const item = review.queue[review.index];
+  area.hidden = false;
+  $("vocabularyLibraryList").hidden = true;
+  if (!item) {
+    area.innerHTML = `<div class="vocabulary-review-card"><div><div class="front">今日复习完成</div><p class="status-text">已经处理所有到期词条。</p><button class="btn" id="finishVocabReviewBtn">返回生词本</button></div></div>`;
+    return;
+  }
+  area.innerHTML = `<div class="vocabulary-review-card"><div><div class="front">${escapeHtml(item.term)}</div>${item.phonetic ? `<p>${escapeHtml(item.phonetic)}</p>` : ""}
+    ${review.revealed ? `<div class="answer"><strong>${escapeHtml(item.translation || item.definition || "待补充释义")}</strong>${item.context ? `<p>${escapeHtml(item.context)}</p>` : ""}</div><div class="review-rating-row"><button class="btn" data-vocab-rating="again">忘记</button><button class="btn" data-vocab-rating="hard">困难</button><button class="btn primary" data-vocab-rating="good">记得</button><button class="btn" data-vocab-rating="easy">简单</button></div>` : `<button class="btn primary" id="revealVocabAnswerBtn">显示答案</button>`}</div></div>`;
+}
+
+async function startVocabularyReview() {
+  const data = await api("/api/vocabulary/review/queue");
+  state.vocabularyReview = { queue: asArray(data.items), index: 0, revealed: false };
+  renderVocabularyReview();
+}
+
+async function rateVocabulary(rating) {
+  const review = state.vocabularyReview;
+  const item = review.queue[review.index];
+  if (!item) return;
+  await api(`/api/vocabulary/review/${encodeURIComponent(item.id)}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rating, mode: "adaptive" }),
+  });
+  review.index += 1;
+  review.revealed = false;
+  renderVocabularyReview();
+}
+
 // ───────── Batch analysis ─────────
 async function runBatchAnalyze() {
   const btn = $("batchAnalyzeBtn");
@@ -2041,7 +2335,7 @@ document.addEventListener("click", async (event) => {
   const targetEl = rawTarget instanceof Element ? rawTarget : rawTarget?.parentElement;
   if (!targetEl) return;
   const target = targetEl.closest(
-    "button, [data-open-article], [data-open-book], [data-step], [data-tab], [data-list], [data-diff], .sent, [data-say], [data-add-vocab], [data-vocab-imitate], [data-grade-reading], [data-dictation-feedback], [data-toggle-source], [data-collapse-section], [data-go], [data-density], [data-size], [data-theme], [data-round], [data-speed], [data-play-dict], [data-delete-source], [data-revoke-app-password], .crumb-link"
+    "button, [data-open-article], [data-open-book], [data-step], [data-tab], [data-list], [data-diff], .sent, [data-word], [data-say], [data-add-vocab], [data-vocab-delete], [data-vocab-rating], [data-vocab-imitate], [data-grade-reading], [data-dictation-feedback], [data-toggle-source], [data-collapse-section], [data-go], [data-density], [data-size], [data-theme], [data-round], [data-speed], [data-play-dict], [data-delete-source], [data-revoke-app-password], .crumb-link"
   ) || targetEl;
 
   // Sidebar list switch
@@ -2090,6 +2384,13 @@ document.addEventListener("click", async (event) => {
       state.railTab = target.dataset.tab;
       renderRail();
     }
+    return;
+  }
+  // Word lookup takes priority over selecting/seeking the containing sentence.
+  if (target.matches("[data-word]")) {
+    event.stopPropagation();
+    const sentenceEl = target.closest(".sent");
+    await lookupReaderWord(target.dataset.word, sentenceEl?.dataset.sentence || sentenceEl?.textContent || "", sentenceEl?.dataset.sid || "");
     return;
   }
   // Sentence click
@@ -2163,6 +2464,31 @@ document.addEventListener("click", async (event) => {
   if (target.id === "closeSettingsBtn") { $("settingsDialog").close(); return; }
   if (target.id === "saveSettingsBtn") { saveTweaks(); applyTweaks(); $("settingsDialog").close(); return; }
   if (target.id === "audioLibraryBtn") { window.location.href = "/media"; return; }
+  if (target.id === "issueImportBtn") { resetIssueImport(); $("issueImportDialog").showModal(); return; }
+  if (target.id === "closeIssueImportBtn") { $("issueImportDialog").close(); return; }
+  if (target.id === "openAudioFolderHelpBtn") { window.location.href = "/media?import=folder"; return; }
+  if (target.id === "confirmIssuePairingBtn") { await runAction(target, "保存中…", confirmIssuePairing); return; }
+  if (target.id === "closeDictionaryBtn") { $("dictionaryDialog").close(); return; }
+  if (target.id === "speakDictionaryBtn") { if (state.dictionary.item?.term) await speak(state.dictionary.item.term); return; }
+  if (target.id === "addDictionaryWordBtn") { await runAction(target, "加入中…", addCurrentDictionaryWord); return; }
+  if (target.id === "vocabularyLibraryBtn") {
+    $("vocabularyReviewArea").hidden = true; $("vocabularyLibraryList").hidden = false;
+    if (!$("vocabularyDialog").open) $("vocabularyDialog").showModal();
+    await loadVocabularyLibrary(); return;
+  }
+  if (target.id === "closeVocabularyBtn") { $("vocabularyDialog").close(); return; }
+  if (target.id === "reviewDueVocabBtn") { await startVocabularyReview(); return; }
+  if (target.id === "revealVocabAnswerBtn") { state.vocabularyReview.revealed = true; renderVocabularyReview(); return; }
+  if (target.matches("[data-vocab-rating]")) { await runAction(target, "记录中…", () => rateVocabulary(target.dataset.vocabRating)); return; }
+  if (target.id === "finishVocabReviewBtn") {
+    $("vocabularyReviewArea").hidden = true; $("vocabularyLibraryList").hidden = false; await loadVocabularyLibrary(); return;
+  }
+  if (target.matches("[data-vocab-delete]")) {
+    if (!confirm("从生词本删除这个词条？")) return;
+    await api(`/api/vocabulary/${encodeURIComponent(target.dataset.vocabDelete)}`, { method: "DELETE" });
+    await loadVocabularyLibrary($("vocabularySearchInput").value.trim()); return;
+  }
+  if (target.id === "offlineArticleBtn") { await toggleOfflineArticle(target); return; }
   if (target.id === "originalAudioBtn") { await playOriginalArticleAudio(); return; }
   if (target.id === "closeArticleAudioBtn") {
     $("articleOriginalAudio").pause();
@@ -2547,12 +2873,38 @@ document.addEventListener("input", (event) => {
     saveTweaks();
     applyTweaks();
   }
+  if (t.id === "vocabularySearchInput") {
+    clearTimeout(t._searchTimer);
+    t._searchTimer = setTimeout(() => loadVocabularyLibrary(t.value.trim()).catch(console.error), 250);
+  }
 });
 
 document.addEventListener("change", (event) => {
   const t = event.target;
   if (!(t instanceof Element)) return;
   if (t.id === "writingTask") state.writing.task = t.value;
+  if (t.id === "articleAudioRate") {
+    const player = originalAudioPlayer();
+    player.playbackRate = Number(t.value) || 1;
+    saveOriginalAudioProgress();
+  }
+  if (t.matches("[data-issue-pair]")) {
+    const candidate = state.issueImport.candidates.find((item) => item.article_id === t.dataset.issuePair);
+    if (candidate) {
+      candidate.media_id = t.value || null;
+      candidate.media_title = state.issueImport.media.find((item) => item.id === t.value)?.title || null;
+      if ((candidate.media_id || "") !== candidate.original_media_id) {
+        candidate.match_method = candidate.media_id ? "manual" : "unmatched";
+        candidate.confidence = candidate.media_id ? 1 : 0;
+      }
+    }
+  }
+});
+
+$("issueImportForm")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try { await submitIssueImport(); }
+  catch (error) { $("issueImportProgressText").textContent = error.message; alert(error.message); }
 });
 
 // File upload
@@ -2667,5 +3019,7 @@ originalAudioPlayer().addEventListener("timeupdate", () => {
 originalAudioPlayer().addEventListener("pause", () => saveOriginalAudioProgress());
 originalAudioPlayer().addEventListener("ended", () => saveOriginalAudioProgress(true));
 window.addEventListener("pagehide", () => { persistOriginalAudioPlayback(); saveOriginalAudioProgress(); });
+window.addEventListener("online", () => flushOfflineActions().then(() => refreshAll()).catch(console.error));
+window.EnglishLabAuth.ready.then(() => flushOfflineActions().catch(console.error));
 refreshAll();
 initRailResizer();

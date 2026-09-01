@@ -4,11 +4,17 @@
   "description": "自托管英语精读与听力资料库",
   "lang": "zh-CN",
   "start_url": "/",
+  "id": "/",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
   "background_color": "#f3f1ec",
   "theme_color": "#f3f1ec",
   "icons": [
     { "src": "/static/icons/app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    { "name": "文章库", "short_name": "文章", "url": "/" },
+    { "name": "音频库", "short_name": "音频", "url": "/media" }
   ]
 }
