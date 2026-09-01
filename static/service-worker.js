@@ -1,4 +1,4 @@
-const SHELL_CACHE = "english-lab-shell-v5";
+const SHELL_CACHE = "english-lab-shell-v6";
 const RUNTIME_CACHE = "english-lab-runtime-v1";
 const OFFLINE_PACK_CACHE = "english-lab-article-packs-v1";
 const SHELL = [

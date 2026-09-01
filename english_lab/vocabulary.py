@@ -4,7 +4,9 @@ import csv
 import io
 import json
 import re
+import sqlite3
 import uuid
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -261,6 +263,9 @@ def lookup_payload(user_id: str, term: str) -> dict[str, Any]:
                 return {"found": True, "saved": False, "cached": True, "provider": cached["provider"], "item": item}
             except json.JSONDecodeError:
                 pass
+        offline = _dictionary_entry(connection, normalized, lemma)
+        if offline:
+            return {"found": True, "saved": False, "provider": offline.pop("_source", "local-dict"), "item": offline}
     local = LOCAL_GLOSSARY.get(normalized) or LOCAL_GLOSSARY.get(lemma)
     item = {
         "term": term.strip(), "normalized_term": normalized, "lemma": lemma,
@@ -281,6 +286,97 @@ def cache_lookup(term: str, item: dict[str, Any], provider: str) -> None:
                payload_json=excluded.payload_json,provider=excluded.provider,updated_at=excluded.updated_at""",
             (normalized, json.dumps(item, ensure_ascii=False), provider[:80], utc_now()),
         )
+
+
+def _dictionary_entry(connection: Any, normalized: str, lemma: str) -> dict[str, Any] | None:
+    """Look up an imported offline dictionary entry, preferring an exact match
+    over the inferred lemma. Returns None when no dictionary has been imported."""
+    if not normalized:
+        return None
+    try:
+        row = connection.execute(
+            """SELECT * FROM dictionary_entries WHERE normalized_term IN (?,?)
+               ORDER BY CASE normalized_term WHEN ? THEN 0 ELSE 1 END LIMIT 1""",
+            (normalized, lemma, normalized),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None  # table absent on a database that predates migration 7
+    if not row:
+        return None
+    return {
+        "term": row["term"], "normalized_term": normalized, "lemma": lemma,
+        "phonetic": row["phonetic"], "part_of_speech": row["part_of_speech"],
+        "definition": row["definition"], "translation": row["translation"],
+        "context_note": "", "contexts": [],
+        "_source": row["source"] or "local-dict",
+    }
+
+
+def bulk_upsert_dictionary(entries: Iterable[dict[str, Any]], *, batch_size: int = 2000) -> int:
+    """Insert or replace offline dictionary rows. Accepts dicts with a ``term``
+    and any of phonetic/part_of_speech/translation/definition/source. Returns the
+    number of rows written."""
+    written = 0
+    pending: list[tuple[Any, ...]] = []
+
+    def flush() -> None:
+        nonlocal written
+        if not pending:
+            return
+        with transaction() as connection:
+            connection.executemany(
+                """INSERT INTO dictionary_entries(
+                       normalized_term,term,phonetic,part_of_speech,translation,definition,source,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?)
+                   ON CONFLICT(normalized_term) DO UPDATE SET
+                       term=excluded.term, phonetic=excluded.phonetic,
+                       part_of_speech=excluded.part_of_speech, translation=excluded.translation,
+                       definition=excluded.definition, source=excluded.source,
+                       updated_at=excluded.updated_at""",
+                pending,
+            )
+        written += len(pending)
+        pending.clear()
+
+    now = utc_now()
+    for entry in entries:
+        term = str(entry.get("term") or "").strip()
+        normalized = normalize_term(term)
+        if not normalized:
+            continue
+        translation = str(entry.get("translation") or "").strip()
+        definition = str(entry.get("definition") or "").strip()
+        if not translation and not definition:
+            continue
+        pending.append((
+            normalized, term,
+            str(entry.get("phonetic") or "").strip(),
+            str(entry.get("part_of_speech") or entry.get("pos") or "").strip(),
+            translation, definition,
+            str(entry.get("source") or "").strip()[:80], now,
+        ))
+        if len(pending) >= batch_size:
+            flush()
+    flush()
+    return written
+
+
+def dictionary_stats() -> dict[str, Any]:
+    """Summary of the imported offline dictionary for status/settings display."""
+    try:
+        with connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS total, MAX(updated_at) AS updated_at FROM dictionary_entries"
+            ).fetchone()
+            sources = [
+                {"source": r["source"] or "unknown", "count": r["count"]}
+                for r in connection.execute(
+                    "SELECT source, COUNT(*) AS count FROM dictionary_entries GROUP BY source ORDER BY count DESC"
+                ).fetchall()
+            ]
+    except sqlite3.OperationalError:
+        return {"total": 0, "updated_at": None, "sources": []}
+    return {"total": int(row["total"] or 0), "updated_at": row["updated_at"], "sources": sources}
 
 
 @router.get("")

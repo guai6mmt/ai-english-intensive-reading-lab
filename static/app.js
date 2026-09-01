@@ -755,7 +755,7 @@ function syncOriginalAudioHighlight() {
     rebuildOriginalAudioTimeline();
   }
   const time = player.currentTime || 0;
-  const current = timelineEntryAt(state.originalAudio.timeline, time) || state.originalAudio.timeline.at(-1);
+  const current = timelineEntryAt(state.originalAudio.timeline, time);
   const currentElement = current
     ? document.querySelector(`#readerEl .sent[data-sid="${CSS.escape(current.sid)}"]`)
     : null;
@@ -771,16 +771,24 @@ function syncOriginalAudioHighlight() {
   if (!player.paused) revealAudioSentence(element);
 }
 
+// Returns the sentence that is (or was most recently) playing at `time`: the last
+// entry whose start has been reached. Precise alignments leave silent gaps between
+// sentences; during such a gap this keeps the just-finished sentence highlighted
+// instead of falling through to a null/last-sentence match. Returns null only when
+// playback is still before the first sentence begins.
 function timelineEntryAt(timeline, time) {
-  let low = 0, high = timeline.length - 1;
+  let low = 0, high = timeline.length - 1, result = null;
   while (low <= high) {
     const middle = (low + high) >> 1;
     const entry = timeline[middle];
-    if (time < entry.start) high = middle - 1;
-    else if (time >= entry.end) low = middle + 1;
-    else return entry;
+    if (time < entry.start) {
+      high = middle - 1;
+    } else {
+      result = entry;
+      low = middle + 1;
+    }
   }
-  return null;
+  return result;
 }
 
 function persistOriginalAudioPlayback() {
@@ -1941,6 +1949,9 @@ function fillSettingsForm() {
   $("ossKeySecretInput").placeholder = oss.access_key_secret_masked || "留空则使用环境变量";
   $("ossStatusText").textContent = oss.configured ? "OSS 已配置" : "OSS 未配置（整篇音频对齐将不可用）";
 
+  if ($("translationFallbackInput")) $("translationFallbackInput").value = state.settings.translation_fallback || "on";
+  loadDictionaryStatus();
+
   const stats = state.summary || {};
   $("globalStats").innerHTML = `
     <div><strong>${formatNumber(stats.source_count)}</strong><span>文件</span></div>
@@ -1992,7 +2003,23 @@ function settingsPayload() {
     oss_bucket: $("ossBucketInput").value,
     oss_endpoint: $("ossEndpointInput").value,
     oss_temp_prefix: $("ossPrefixInput").value,
+    translation_fallback: $("translationFallbackInput")?.value || "on",
   };
+}
+
+async function loadDictionaryStatus() {
+  const el = $("dictionaryStatusText");
+  if (!el) return;
+  try {
+    const data = await api("/api/dictionary/status");
+    const total = data.offline?.total || 0;
+    const parts = [total ? `本地词典已收录 ${formatNumber(total)} 个词条` : "尚未导入本地词典（可离线查词）"];
+    parts.push(data.ai_configured ? "大模型已配置" : "大模型未配置");
+    parts.push(data.translation_fallback ? "免费翻译 API 已启用" : "免费翻译 API 已关闭");
+    el.textContent = parts.join(" · ");
+  } catch {
+    el.textContent = "无法读取本地词典状态。";
+  }
 }
 
 function remoteAccessUrl(path = "/dav/") {
@@ -2202,6 +2229,16 @@ async function confirmIssuePairing() {
   alert(`已保存 ${links.length} 组文章—音频配对。首次播放时会在后台生成精确句子时间轴。`);
 }
 
+function dictionarySourceLabel(data) {
+  if (data.saved) return "生词本";
+  const provider = data.meta?.provider || data.provider || "";
+  if (data.meta?.used_translation_api || provider === "translation-api") return "免费翻译 API";
+  if (data.meta?.used_ai) return `大模型 · ${provider}`;
+  if (data.cached) return `缓存 · ${provider}`;
+  if (provider && provider !== "local") return provider === "local-dict" ? "本地词典" : `本地词典 · ${provider}`;
+  return "内置词库";
+}
+
 async function lookupReaderWord(word, sentence, sentenceId) {
   state.dictionary = { item: null, context: sentence, sentenceId };
   $("dictionaryTerm").textContent = word;
@@ -2216,8 +2253,13 @@ async function lookupReaderWord(word, sentence, sentenceId) {
     const item = data.item || {};
     state.dictionary.item = item;
     $("dictionaryTerm").textContent = item.term || word;
+    const notFound = data.found === false;
+    const hint = notFound
+      ? `<div class="dictionary-hint">未查到释义。可在「设置 → 查词与翻译」导入本地词典（ECDICT），或配置大模型 / 免费翻译 API；也可直接加入生词本后手动补充。</div>`
+      : `<div class="dictionary-source">来源：${escapeHtml(dictionarySourceLabel(data))}</div>`;
     $("dictionaryBody").innerHTML = `<div class="dictionary-headword"><strong>${escapeHtml(item.term || word)}</strong><span>${escapeHtml(item.phonetic || "")}</span><span>${escapeHtml(item.part_of_speech || "")}</span></div>
-      <div class="dictionary-definition">${item.translation ? `<p><strong>中文</strong>　${escapeHtml(item.translation)}</p>` : ""}${item.definition ? `<p><strong>Definition</strong>　${escapeHtml(item.definition)}</p>` : ""}${item.context_note ? `<p><strong>语境</strong>　${escapeHtml(item.context_note)}</p>` : ""}</div>
+      <div class="dictionary-definition">${item.translation && !notFound ? `<p><strong>中文</strong>　${escapeHtml(item.translation)}</p>` : ""}${item.definition ? `<p><strong>Definition</strong>　${escapeHtml(item.definition)}</p>` : ""}${item.context_note ? `<p><strong>语境</strong>　${escapeHtml(item.context_note)}</p>` : ""}</div>
+      ${hint}
       <div class="dictionary-context">${escapeHtml(sentence)}</div>`;
     $("addDictionaryWordBtn").textContent = data.saved ? "已在生词本" : "加入生词本";
     $("addDictionaryWordBtn").disabled = Boolean(data.saved);

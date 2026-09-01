@@ -14,8 +14,8 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="/static/tokens.css?v=20260826" />
-    <link rel="stylesheet" href="/static/components.css?v=20260826" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260901" />
+    <link rel="stylesheet" href="/static/components.css?v=20260901b" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260901b" />
     <script src="/static/theme.js?v=20260826"></script>
     <script src="/static/auth.js"></script>
   </head>
@@ -267,6 +267,18 @@
           <p class="status-text">文本、图片、音频可分别选择模型。AI 朗读：Qwen 走 TTS + OSS + ASR 对齐；MiniMax 整篇一次合成、语音更连贯并自带句级时间轴，无需 OSS/ASR。</p>
         </section>
 
+        <section class="tweaks-block">
+          <h4>查词与翻译</h4>
+          <p class="status-text" id="dictionaryStatusText">正在读取本地词典状态…</p>
+          <label>无本地释义时的翻译回退
+            <select id="translationFallbackInput">
+              <option value="on">优先大模型，其次免费翻译 API</option>
+              <option value="off">仅本地词典 / 大模型（不调用外部翻译）</option>
+            </select>
+          </label>
+          <p class="status-text">点击单词优先查本地词典；未收录时交给已配置的大模型，仍无结果则调用免费翻译 API（仅发送该单词，不含文章内容）。导入本地词典（推荐 <a href="https://github.com/skywind3000/ECDICT" target="_blank" rel="noopener">ECDICT</a>，约 77 万词可离线查询）：<code>python scripts/import_dictionary.py ecdict.csv</code></p>
+        </section>
+
         <div class="settings-grid">
           <section>
             <h4>DeepSeek</h4>
@@ -466,6 +478,6 @@
       </div>
     </dialog>
 
-    <script src="/static/app.js?v=20260901"></script>
+    <script src="/static/app.js?v=20260901b"></script>
   </body>
 </html>

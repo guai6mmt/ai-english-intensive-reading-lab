@@ -115,6 +115,12 @@ OSS_DEFAULTS = {
     "bucket": os.getenv("OSS_BUCKET", ""),
     "temp_prefix": os.getenv("OSS_TEMP_PREFIX", "asr-temp/"),
 }
+# Keyless last-resort translation for word lookup when there is no local entry and
+# no language model configured. Only the single queried word is ever sent.
+TRANSLATION_API_DEFAULTS = {
+    "endpoint": os.getenv("TRANSLATION_API_URL", "https://api.mymemory.translated.net/get"),
+    "langpair": os.getenv("TRANSLATION_API_LANGPAIR", "en|zh-CN"),
+}
 
 STOPWORDS = {
     "the", "and", "that", "for", "with", "this", "from", "are", "was", "were",
@@ -255,6 +261,9 @@ class ModelSettingsRequest(BaseModel):
     oss_bucket: str | None = None
     oss_endpoint: str | None = None
     oss_temp_prefix: str | None = None
+    translation_fallback: str | None = None
+    translation_api_url: str | None = None
+    translation_api_langpair: str | None = None
 
 
 class SpeechRequest(BaseModel):
@@ -2573,6 +2582,7 @@ def settings_response() -> dict[str, Any]:
         "providers": {name: provider_public_config(name) for name in AI_PROVIDERS},
         "minimax": minimax_public_config(),
         "oss": oss_public_config(),
+        "translation_fallback": "off" if not translation_fallback_enabled(settings) else "on",
     }
 
 
@@ -2626,6 +2636,9 @@ def update_settings(request: ModelSettingsRequest) -> dict[str, Any]:
             task = key[: -len("_provider")]
             if value in TASK_PROVIDER_CHOICES.get(task, set(AI_PROVIDERS)):
                 settings[key] = value
+            continue
+        if key == "translation_fallback":
+            settings[key] = "off" if value.lower() == "off" else "on"
             continue
         if key.endswith("_api_key") and not value:
             continue
@@ -4906,6 +4919,55 @@ def get_learning_pack(article_id: str, request: PackRequest) -> dict[str, Any]:
     return {"pack": pack}
 
 
+def translation_fallback_enabled(settings: dict[str, Any] | None = None) -> bool:
+    settings = settings if settings is not None else load_settings()
+    return str(settings.get("translation_fallback", "on")).strip().lower() != "off"
+
+
+def translate_via_api(term: str) -> dict[str, str] | None:
+    """Best-effort keyless translation for a single word, used only when there is
+    no local entry and no language model available. Only the word itself is sent
+    to the translation service — never the surrounding article text. Returns a
+    dict with ``translation`` and ``provider``, or None on any failure."""
+    term = term.strip()
+    if not term or not translation_fallback_enabled():
+        return None
+    settings = load_settings()
+    endpoint = (settings.get("translation_api_url") or TRANSLATION_API_DEFAULTS["endpoint"]).strip()
+    langpair = (settings.get("translation_api_langpair") or TRANSLATION_API_DEFAULTS["langpair"]).strip()
+    try:
+        response = requests.get(endpoint, params={"q": term, "langpair": langpair}, timeout=8)
+        response.raise_for_status()
+        data = response.json()
+    except (requests.RequestException, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    # MyMemory reports quota/errors with a non-200 responseStatus and puts the
+    # notice text where the translation would be — don't surface those as a result.
+    if str(data.get("responseStatus")) not in {"200", ""}:
+        return None
+    translated = clean_text(str((data.get("responseData") or {}).get("translatedText") or ""))
+    upper = translated.upper()
+    if not translated or "MYMEMORY WARNING" in upper or "INVALID" in upper:
+        return None
+    # The service echoes the query back (often upper-cased) when it has no match.
+    if translated.strip().lower() == term.lower():
+        return None
+    return {"translation": translated, "provider": "translation-api"}
+
+
+@app.get("/api/dictionary/status")
+def dictionary_status(request: Request) -> dict[str, Any]:
+    if not request.state.user:
+        raise HTTPException(401, "请先登录。")
+    return {
+        "offline": dictionary_offline_stats(),
+        "translation_fallback": translation_fallback_enabled(),
+        "ai_configured": ai_available(task_provider("text"), prefer_primary=False),
+    }
+
+
 @app.post("/api/dictionary/lookup")
 def dictionary_lookup(spec: DictionaryLookupRequest, request: Request) -> dict[str, Any]:
     user = request.state.user
@@ -4950,7 +5012,17 @@ def dictionary_lookup(spec: DictionaryLookupRequest, request: Request) -> dict[s
     }
     if meta.get("used_ai"):
         cache_vocabulary_lookup(term, normalized, str(meta.get("provider") or "ai"))
-    return {"found": bool(meta.get("used_ai")), "saved": False, "item": normalized, "meta": meta}
+        return {"found": True, "saved": False, "item": normalized, "meta": meta}
+    # No local entry and no language model — fall back to a keyless translation API.
+    translated = translate_via_api(term)
+    if translated:
+        normalized["translation"] = translated["translation"]
+        cache_vocabulary_lookup(term, normalized, translated["provider"])
+        return {
+            "found": True, "saved": False, "item": normalized,
+            "meta": {**meta, "provider": translated["provider"], "used_translation_api": True},
+        }
+    return {"found": False, "saved": False, "item": normalized, "meta": meta}
 
 
 @app.post("/api/outputs")
@@ -5047,6 +5119,7 @@ from english_lab.content_links import (  # noqa: E402
 from english_lab.listening_practice import router as listening_practice_router  # noqa: E402
 from english_lab.vocabulary import (  # noqa: E402
     cache_lookup as cache_vocabulary_lookup,
+    dictionary_stats as dictionary_offline_stats,
     lookup_payload as vocabulary_lookup_payload,
     router as vocabulary_router,
 )

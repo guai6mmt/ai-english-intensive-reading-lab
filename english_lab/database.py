@@ -10,7 +10,7 @@ from .config import config, ensure_server_dirs
 
 
 BASE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
     2: (
@@ -135,6 +135,21 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
                normalized_term TEXT PRIMARY KEY,
                payload_json TEXT NOT NULL,
                provider TEXT NOT NULL DEFAULT 'local',
+               updated_at TEXT NOT NULL
+           )""",
+    ),
+    7: (
+        # Offline bilingual dictionary that any user can populate by importing a
+        # standard word list (e.g. ECDICT). Shared across users; lookups hit this
+        # before falling back to an online model or translation API.
+        """CREATE TABLE IF NOT EXISTS dictionary_entries (
+               normalized_term TEXT PRIMARY KEY,
+               term TEXT NOT NULL,
+               phonetic TEXT NOT NULL DEFAULT '',
+               part_of_speech TEXT NOT NULL DEFAULT '',
+               translation TEXT NOT NULL DEFAULT '',
+               definition TEXT NOT NULL DEFAULT '',
+               source TEXT NOT NULL DEFAULT '',
                updated_at TEXT NOT NULL
            )""",
     ),

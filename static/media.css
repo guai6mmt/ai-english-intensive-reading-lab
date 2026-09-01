@@ -123,7 +123,8 @@ main { max-width:1500px; margin:auto; }
 .pair-footer { align-items:center; }
 .pair-footer .muted { margin-right:auto; }
 code { padding:2px 5px; border-radius:4px; background:var(--line); overflow-wrap:anywhere; }
-@media (max-width:800px) {
+/* Matches the global-rail breakpoint in components.css (phones + short landscape). */
+@media (max-width:880px), (orientation: landscape) and (max-height: 480px) {
   .media-app { display:block; padding-bottom:calc(144px + env(safe-area-inset-bottom)); }
   .player { bottom:calc(64px + env(safe-area-inset-bottom)); }
   .topbar { height:auto; min-height:58px; padding:0 14px; gap:14px; }

@@ -1,6 +1,55 @@
 from __future__ import annotations
 
 
+def test_offline_dictionary_import_and_lookup(authenticated_client) -> None:
+    from english_lab.vocabulary import bulk_upsert_dictionary
+
+    client, csrf = authenticated_client
+    headers = {"X-CSRF-Token": csrf}
+
+    written = bulk_upsert_dictionary([
+        {"term": "Quintessential", "phonetic": "/ˌkwɪntɪˈsenʃl/",
+         "translation": "adj. 精髓的；典型的", "source": "unit-test"},
+        {"term": "blank-entry"},  # skipped: no translation or definition
+    ])
+    assert written == 1
+
+    lookup = client.post(
+        "/api/dictionary/lookup",
+        headers=headers,
+        json={"term": "quintessential", "context": "A quintessential English breakfast."},
+    )
+    assert lookup.status_code == 200, lookup.text
+    body = lookup.json()
+    assert body["found"] is True
+    assert body["saved"] is False
+    assert body["item"]["translation"].startswith("adj.")
+    assert body["provider"] == "unit-test"
+
+    status = client.get("/api/dictionary/status")
+    assert status.status_code == 200
+    assert status.json()["offline"]["total"] >= 1
+
+
+def test_lookup_without_local_or_ai_reports_not_found(authenticated_client) -> None:
+    client, csrf = authenticated_client
+    headers = {"X-CSRF-Token": csrf}
+    # Disable the external translation API so this stays offline/deterministic.
+    settings = client.post("/api/settings", headers=headers, json={"translation_fallback": "off"})
+    assert settings.status_code == 200
+    assert settings.json()["translation_fallback"] == "off"
+
+    lookup = client.post(
+        "/api/dictionary/lookup",
+        headers=headers,
+        json={"term": "zzxqwlkj", "context": "no such word"},
+    )
+    assert lookup.status_code == 200, lookup.text
+    assert lookup.json()["found"] is False
+    # Restore the default so later tests are unaffected.
+    client.post("/api/settings", headers=headers, json={"translation_fallback": "on"})
+
+
 def test_contextual_vocabulary_review_and_exports(authenticated_client) -> None:
     client, csrf = authenticated_client
     headers = {"X-CSRF-Token": csrf}

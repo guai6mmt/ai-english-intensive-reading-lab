@@ -440,6 +440,8 @@ body { font-feature-settings: "ss01", "cv11"; }
 .dictionary-headword span { color:var(--muted); }
 .dictionary-definition { display:grid; gap:8px; line-height:1.65; }
 .dictionary-context { margin-top:14px; padding:12px; border-left:3px solid var(--accent); background:var(--paper-2); font:14px var(--serif); }
+.dictionary-source { margin-top:10px; font:11px var(--mono); color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+.dictionary-hint { margin-top:10px; padding:10px 12px; border:1px solid var(--warn-soft); border-radius:var(--radius-sm); background:var(--warn-soft); color:var(--warn); font-size:13px; line-height:1.6; }
 
 .vocab-toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:14px; }
 .vocab-toolbar input { flex:1; min-width:180px; }
@@ -1568,7 +1570,10 @@ dialog::backdrop { background: rgba(15, 18, 22, 0.5); }
   .work-side { position: static; height: auto; max-height: none; border-top: 1px solid var(--line); }
   .work-main { border-right: 0; }
 }
-@media (max-width: 880px) {
+/* Matches the global-rail breakpoint in components.css: phones in any orientation
+   plus short landscape viewports (e.g. iPhone rotated) collapse to a single
+   column with the sidebar as an overlay so the article stays readable. */
+@media (max-width: 880px), (orientation: landscape) and (max-height: 480px) {
   .app { grid-template-columns: 1fr; }
   .main { padding-bottom:72px; }
   .side {
@@ -1590,6 +1595,19 @@ dialog::backdrop { background: rgba(15, 18, 22, 0.5); }
   .article-audio-dock audio { grid-column:1 / -1; grid-row:2; }
   .article-audio-dock select { grid-column:2; grid-row:1; }
   .article-audio-dock #articleAudioLibraryLink { display:none; }
+}
+
+/* Short landscape (phone rotated) has very little height, so keep the original
+   audio dock to a single slim row instead of the stacked mobile layout — it must
+   not bury the article while the audio plays. Overrides the block above. */
+@media (orientation: landscape) and (max-height: 480px) {
+  .article-audio-dock { grid-template-columns:minmax(90px,1fr) minmax(200px,2fr) auto auto; bottom:72px; padding:6px 10px; gap:10px; align-items:center; }
+  .article-audio-dock>div { grid-column:1; grid-row:1; min-width:0; }
+  .article-audio-dock>div strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .article-audio-dock>div small { display:none; }
+  .article-audio-dock audio { grid-column:2; grid-row:1; height:34px; }
+  .article-audio-dock select { grid-column:3; grid-row:1; }
+  .article-audio-dock #closeArticleAudioBtn { grid-column:4; grid-row:1; }
 }
 
 /* Settings · remote phone access */
