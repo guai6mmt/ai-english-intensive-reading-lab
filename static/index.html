@@ -168,7 +168,7 @@
 
     <dialog id="issueImportDialog" class="wide-dialog">
       <div class="dialog-header">
-        <div><h3>导入一期内容</h3><p class="status-text">同时导入 EPUB 与音频 ZIP，系统会自动解析并生成文章—音频配对预览。</p></div>
+        <div><h3>导入一期内容</h3><p class="status-text">同时导入 EPUB 与音频 ZIP，系统会自动匹配，并仅对低置信度项目执行音频抽样和 ASR 正文核验。</p></div>
         <button class="btn ghost" id="closeIssueImportBtn" type="button">关闭</button>
       </div>
       <form id="issueImportForm">
@@ -177,7 +177,7 @@
             <label class="issue-file-card"><strong>1. EPUB 文章</strong><span>必选；保留栏目与文章顺序</span><input id="issueEpubInput" type="file" accept=".epub,application/epub+zip" required /></label>
             <label class="issue-file-card"><strong>2. 音频 ZIP</strong><span>可选；支持 MP3、M4A、AAC、WAV、FLAC、OGG、OPUS、M4B</span><input id="issueAudioZipInput" type="file" accept=".zip,application/zip" /></label>
           </div>
-          <p class="status-text">如果音频没有打成 ZIP，可继续使用音频库里的“上传文件夹”。压缩包只在服务器临时处理，不会进入代码仓库。</p>
+          <p class="status-text">如果音频没有打成 ZIP，可继续使用音频库里的“上传文件夹”。高置信度项目不会调用 ASR；识别结果会缓存。压缩包只在服务器临时处理，不会进入代码仓库。</p>
           <div class="issue-progress" id="issueImportProgress" hidden><div class="issue-progress-bar"><span id="issueImportProgressBar"></span></div><strong id="issueImportProgressText">正在上传并解析…</strong></div>
           <div id="issueImportResult" hidden>
             <div class="mini-stats" id="issueImportStats"></div>
@@ -478,6 +478,6 @@
       </div>
     </dialog>
 
-    <script src="/static/app.js?v=20260901b"></script>
+    <script src="/static/app.js?v=20260902"></script>
   </body>
 </html>

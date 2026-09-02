@@ -2175,6 +2175,17 @@ function renderIssuePairing(pairing) {
   $("startIssueImportBtn").hidden = true;
 }
 
+async function pollImportedIssueVerification(taskId) {
+  while (true) {
+    const status = await api(`/api/v1/content-links/content-match/status/${taskId}`);
+    $("issueImportProgressBar").style.width = `${90 + Math.round(Number(status.pct || 0) * 0.1)}%`;
+    $("issueImportProgressText").textContent = status.msg || "正在核验低置信度音频正文…";
+    if (status.error) return { error: status.error };
+    if (status.result) return { result: status.result };
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+}
+
 async function submitIssueImport() {
   const epub = $("issueEpubInput").files?.[0];
   const audioZip = $("issueAudioZipInput").files?.[0];
@@ -2194,8 +2205,6 @@ async function submitIssueImport() {
   try {
     const result = await api("/api/issues/import", { method: "POST", body: form });
     clearInterval(timer);
-    $("issueImportProgressBar").style.width = "100%";
-    $("issueImportProgressText").textContent = result.pairing ? "导入完成，请检查配对。" : "EPUB 导入完成。";
     if (result.pairing) renderIssuePairing(result.pairing);
     else {
       $("issueImportResult").hidden = false;
@@ -2203,6 +2212,28 @@ async function submitIssueImport() {
       $("issuePairBody").innerHTML = "";
       $("startIssueImportBtn").hidden = true;
     }
+    const verification = result.content_verification || {};
+    if (verification.task_id) {
+      $("issueImportProgressBar").style.width = "90%";
+      $("issueImportProgressText").textContent = `已导入，正在自动核验 ${verification.requested || "低置信度"} 条音频…`;
+      try {
+        const checked = await pollImportedIssueVerification(verification.task_id);
+        if (checked.result) {
+          renderIssuePairing(checked.result);
+          const info = checked.result.content_verification || {};
+          $("issueImportProgressText").textContent = `导入及正文核验完成：处理 ${info.transcribed || 0}/${info.requested || 0} 条，请检查配对。`;
+        } else {
+          $("issueImportProgressText").textContent = `导入完成；正文核验未完成：${checked.error} 可继续检查并保存现有配对。`;
+        }
+      } catch (error) {
+        $("issueImportProgressText").textContent = `导入完成；暂时无法取得正文核验结果：${error.message}`;
+      }
+    } else {
+      $("issueImportProgressText").textContent = result.pairing
+        ? (verification.message || "导入完成，请检查配对。")
+        : "EPUB 导入完成。";
+    }
+    $("issueImportProgressBar").style.width = "100%";
     await refreshAll();
   } finally {
     clearInterval(timer);

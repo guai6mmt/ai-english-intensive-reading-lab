@@ -3136,6 +3136,7 @@ async def import_issue_bundle(
         "summary": article_result.get("summary", {}),
         "audio": None,
         "pairing": None,
+        "content_verification": None,
     }
     if audio_zip is None or not audio_zip.filename:
         return result
@@ -3154,7 +3155,19 @@ async def import_issue_bundle(
         collection_name = f"{Path(str(source.get('filename') or audio_zip.filename)).stem} Audio"
         audio_result = import_audio_zip(archive_path, user["id"], collection_name)
         result["audio"] = audio_result
-        result["pairing"] = preview_content_pairing(source["id"], audio_result["collection_id"])
+        pairing = preview_content_pairing(source["id"], audio_result["collection_id"])
+        result["pairing"] = pairing
+        verification_ids = content_verification_media_ids(pairing)
+        if verification_ids:
+            result["content_verification"] = _start_content_pairing_job(
+                source["id"], audio_result["collection_id"], requested=len(verification_ids)
+            )
+        else:
+            result["content_verification"] = {
+                "status": "not_needed",
+                "requested": 0,
+                "message": "元数据匹配已达到高置信度，无需调用 ASR。",
+            }
         return result
     except HTTPException:
         raise
@@ -5442,22 +5455,29 @@ def _run_content_pairing(
     return result
 
 
-@app.post("/api/v1/content-links/content-match/start")
-def content_pairing_start(spec: PairPreviewRequest, request: Request) -> dict[str, Any]:
-    current_user(request)
-    # Validate both ids before creating a background task.
-    preview_content_pairing(spec.source_id, spec.collection_id)
-    key = stable_id("content-pairing", spec.source_id, spec.collection_id, "sample-v1")
+def _start_content_pairing_job(
+    source_id: str,
+    collection_id: str,
+    *,
+    requested: int | None = None,
+) -> dict[str, Any]:
+    """Start or reuse the background ASR verification for an imported issue."""
+    key = stable_id("content-pairing", source_id, collection_id, "sample-v1")
     existing = find_job_by_key("content_pairing", key)
     if existing:
-        return {"task_id": existing["task_id"], "cached": False, "existing": True}
+        return {
+            "task_id": existing["task_id"],
+            "status": "running",
+            "existing": True,
+            "requested": requested,
+        }
     task_id = create_job("content_pairing", key=key)
 
     def worker() -> None:
         try:
             def progress(stage: str, pct: int, msg: str) -> None:
                 update_job(task_id, stage=stage, pct=pct, msg=msg)
-            result = _run_content_pairing(spec.source_id, spec.collection_id, progress)
+            result = _run_content_pairing(source_id, collection_id, progress)
             finish_job(task_id, result=result)
         except HTTPException as exc:
             finish_job(task_id, error=str(exc.detail))
@@ -5465,7 +5485,21 @@ def content_pairing_start(spec: PairPreviewRequest, request: Request) -> dict[st
             finish_job(task_id, error=str(exc))
 
     threading.Thread(target=worker, daemon=True, name=f"content-pair-{task_id[:8]}").start()
-    return {"task_id": task_id, "cached": False, "existing": False}
+    return {
+        "task_id": task_id,
+        "status": "started",
+        "existing": False,
+        "requested": requested,
+    }
+
+
+@app.post("/api/v1/content-links/content-match/start")
+def content_pairing_start(spec: PairPreviewRequest, request: Request) -> dict[str, Any]:
+    current_user(request)
+    # Validate both ids before creating a background task.
+    preview_content_pairing(spec.source_id, spec.collection_id)
+    started = _start_content_pairing_job(spec.source_id, spec.collection_id)
+    return {**started, "cached": False}
 
 
 @app.get("/api/v1/content-links/content-match/status/{task_id}")

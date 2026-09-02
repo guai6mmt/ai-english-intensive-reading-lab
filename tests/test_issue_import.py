@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import time
 import uuid
 import wave
 import zipfile
@@ -29,10 +30,10 @@ def _epub_bytes(title: str) -> bytes:
     return output.getvalue()
 
 
-def _audio_zip_bytes() -> bytes:
+def _audio_zip_bytes(title: str = "005 Leaders - Resilient institutions.wav") -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("005 Leaders - Resilient institutions.wav", _wav_bytes())
+        archive.writestr(title, _wav_bytes())
     return output.getvalue()
 
 
@@ -52,11 +53,66 @@ def test_unified_issue_import_builds_pairing_preview(authenticated_client) -> No
     assert payload["source"]["article_count"] == 1
     assert payload["audio"]["total_files"] == 1
     assert payload["pairing"]["summary"]["matched"] == 1
+    assert payload["content_verification"]["status"] == "not_needed"
     candidate = payload["pairing"]["candidates"][0]
     assert candidate["media_id"]
     assert candidate["section"] == "Leaders"
     # Keep the module-scoped test database neutral for legacy media tests.
     deleted = client.delete(f"/api/v1/media/items/{candidate['media_id']}", headers={"X-CSRF-Token": csrf})
+    assert deleted.status_code == 200
+    from english_lab.database import transaction
+    with transaction() as connection:
+        connection.execute("DELETE FROM media_items WHERE id = ?", (candidate["media_id"],))
+
+
+def test_unified_issue_import_automatically_verifies_weak_titles(authenticated_client, monkeypatch) -> None:
+    import app as app_module
+
+    client, csrf = authenticated_client
+    monkeypatch.setattr(
+        app_module,
+        "_transcribe_content_sample",
+        lambda media, progress=None: (
+            "This carefully reported article explains why resilient institutions matter "
+            "during periods of economic and political uncertainty.",
+            False,
+        ),
+    )
+    suffix = uuid.uuid4().hex[:8]
+    response = client.post(
+        "/api/issues/import",
+        headers={"X-CSRF-Token": csrf},
+        files={
+            "epub": (f"TE-2026-06-20-{suffix}.epub", _epub_bytes("Resilient institutions"), "application/epub+zip"),
+            "audio_zip": (
+                f"audio-{suffix}.zip",
+                _audio_zip_bytes("005 Leaders - Our cover.wav"),
+                "application/zip",
+            ),
+        },
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    verification = payload["content_verification"]
+    assert verification["status"] == "started"
+    assert verification["requested"] == 1
+
+    status = None
+    for _ in range(100):
+        status = client.get(
+            f"/api/v1/content-links/content-match/status/{verification['task_id']}"
+        ).json()
+        if status.get("result") or status.get("error"):
+            break
+        time.sleep(0.02)
+    assert status and not status.get("error")
+    candidate = status["result"]["candidates"][0]
+    assert candidate["match_method"] == "content"
+    assert status["result"]["summary"]["content_verified"] == 1
+
+    deleted = client.delete(
+        f"/api/v1/media/items/{candidate['media_id']}", headers={"X-CSRF-Token": csrf}
+    )
     assert deleted.status_code == 200
     from english_lab.database import transaction
     with transaction() as connection:
