@@ -378,6 +378,44 @@ async function pollJob(jobId) {
   }
 }
 
+function packageKind(kind) {
+  return ({ browser: "电脑文件夹", zip: "ZIP 压缩包", scan: "服务器扫描" })[kind] || kind || "导入";
+}
+
+function packageTime(value) {
+  const date = new Date(value || "");
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString("zh-CN", { hour12: false });
+}
+
+async function loadPackages() {
+  $("packageList").innerHTML = `<div class="loading-state">正在读取导入记录…</div>`;
+  const data = await api("/api/v1/media/imports/packages");
+  const items = data.items || [];
+  $("packageList").innerHTML = items.map((item) => {
+    const active = Number(item.active_count || 0);
+    const deleted = Number(item.deleted_count || 0);
+    const counts = `新导入 ${item.imported_count || 0} · 使用中 ${active} · 回收站 ${deleted} · 重复 ${item.duplicate_files || 0}`;
+    return `<div class="package-row">
+      <div class="package-main"><strong title="${esc(item.source)}">${esc(item.source || "未命名导入包")}</strong><small>${esc(packageKind(item.kind))} · ${esc(packageTime(item.created_at))}<br>${counts}</small></div>
+      <div class="package-actions">
+        ${deleted ? `<button data-package-restore="${esc(item.id)}">整包恢复</button>` : ""}
+        ${active ? `<button data-package-delete="${esc(item.id)}" data-package-name="${esc(item.source || "未命名导入包")}">整包删除</button>` : ""}
+      </div>
+    </div>`;
+  }).join("") || `<div class="empty"><h2>还没有导入记录</h2><p>导入音频后，可以在这里按包管理。</p></div>`;
+}
+
+async function openPackages() {
+  $("packagesNotice").hidden = true;
+  $("packagesDialog").showModal();
+  try { await loadPackages(); } catch (error) {
+    $("packageList").innerHTML = "";
+    $("packagesNotice").hidden = false;
+    $("packagesNotice").classList.add("is-error");
+    $("packagesNotice").textContent = error.message;
+  }
+}
+
 function openEdit(id) {
   const item = state.items.find((entry) => entry.id === id);
   if (!item) return;
@@ -540,10 +578,25 @@ document.addEventListener("click", async (event) => {
       await api(`/api/v1/media/items/${button.dataset.delete}`, { method: "DELETE" }); await loadData(); return;
     }
     if (button.dataset.restore) { await api(`/api/v1/media/items/${button.dataset.restore}/restore`, { method: "POST" }); await loadData(); return; }
+    if (button.dataset.packageDelete) {
+      if (!confirm(`将“${button.dataset.packageName}”中新导入的全部音频移入回收站？`)) return;
+      const result = await api(`/api/v1/media/imports/${button.dataset.packageDelete}`, { method: "DELETE" });
+      await Promise.all([loadPackages(), loadData()]);
+      showNotice(`已将 ${result.moved || 0} 条音频移入回收站。`);
+      return;
+    }
+    if (button.dataset.packageRestore) {
+      const result = await api(`/api/v1/media/imports/${button.dataset.packageRestore}/restore`, { method: "POST" });
+      await Promise.all([loadPackages(), loadData()]);
+      showNotice(`已恢复 ${result.restored || 0} 条音频。`);
+      return;
+    }
   } catch (error) { showNotice(error.message, true); }
 });
 
 $("importBtn").addEventListener("click", () => $("importDialog").showModal());
+$("packagesBtn").addEventListener("click", () => openPackages());
+$("closePackagesBtn").addEventListener("click", () => $("packagesDialog").close());
 $("pairBtn").addEventListener("click", () => openPairing());
 $("closePairBtn").addEventListener("click", () => {
   $("pairPreviewAudio").pause();

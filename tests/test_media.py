@@ -108,3 +108,59 @@ def test_chunked_upload(authenticated_client):
     )
     assert completed.status_code == 200, completed.text
     assert completed.json()["status"] == "imported"
+
+
+def test_import_package_can_be_recycled_and_restored(authenticated_client):
+    client, csrf = authenticated_client
+    headers = {"X-CSRF-Token": csrf}
+    created = client.post(
+        "/api/v1/media/imports",
+        headers=headers,
+        json={"total_files": 2, "source": "pytest-package"},
+    ).json()
+    job_id = created["job_id"]
+    media_ids = []
+    for index, seconds in enumerate((0.31, 0.41), 1):
+        response = client.post(
+            f"/api/v1/media/imports/{job_id}/file",
+            headers=headers,
+            files={"file": (f"part-{index}.wav", wav_bytes(seconds), "audio/wav")},
+            data={"relative_path": f"Pytest Package/part-{index}.wav"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "imported"
+        media_ids.append(response.json()["media_id"])
+    client.post(f"/api/v1/media/imports/{job_id}/complete", headers=headers)
+
+    packages = client.get("/api/v1/media/imports/packages")
+    package = next(item for item in packages.json()["items"] if item["id"] == job_id)
+    assert package["imported_count"] == 2
+    assert package["active_count"] == 2
+
+    recycled = client.delete(f"/api/v1/media/imports/{job_id}", headers=headers)
+    assert recycled.status_code == 200, recycled.text
+    assert recycled.json()["moved"] == 2
+    deleted_ids = {item["id"] for item in client.get("/api/v1/media/items?deleted=true").json()["items"]}
+    assert set(media_ids) <= deleted_ids
+
+    restored = client.post(f"/api/v1/media/imports/{job_id}/restore", headers=headers)
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["restored"] == 2
+    active_ids = {item["id"] for item in client.get("/api/v1/media/items").json()["items"]}
+    assert set(media_ids) <= active_ids
+
+    duplicate_job = client.post(
+        "/api/v1/media/imports",
+        headers=headers,
+        json={"total_files": 1, "source": "pytest-duplicates-only"},
+    ).json()["job_id"]
+    duplicate = client.post(
+        f"/api/v1/media/imports/{duplicate_job}/file",
+        headers=headers,
+        files={"file": ("same.wav", wav_bytes(0.31), "audio/wav")},
+        data={"relative_path": "Another Package/same.wav"},
+    )
+    assert duplicate.json()["status"] == "duplicate"
+    assert client.delete(f"/api/v1/media/imports/{duplicate_job}", headers=headers).json()["moved"] == 0
+    active_ids = {item["id"] for item in client.get("/api/v1/media/items").json()["items"]}
+    assert set(media_ids) <= active_ids

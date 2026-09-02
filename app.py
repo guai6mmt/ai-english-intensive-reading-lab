@@ -20,6 +20,7 @@ import uuid
 import wave
 import zipfile
 import zlib
+import xml.etree.ElementTree as ET
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
@@ -948,32 +949,54 @@ def extract_epub_articles(path: Path, source_id: str) -> list[dict[str, Any]]:
                 feed_sections[feed_num] = headings[0]
 
         article_names = [n for n in names if n.lower().endswith((".html", ".xhtml")) and "/article_" in n.lower()]
+        spine_names = epub_spine_documents(book)
         html_names = article_names
         require_article_path = True
-        if not article_names:
+        if spine_names and not article_names:
+            html_names = spine_names
+            require_article_path = False
+        elif not article_names:
             html_names = [n for n in names if n.lower().endswith((".html", ".xhtml"))]
             require_article_path = False
+        current_section = "Articles"
         for index, name in enumerate(html_names, 1):
             raw = decode_epub_markup(book.read(name))
             soup = BeautifulSoup(raw, "html.parser")
             for tag in soup(["script", "style", "nav", "footer"]):
                 tag.decompose()
+            section_index = soup.select_one(".section_index_title")
+            if section_index:
+                section_name = clean_text(section_index.get_text(" "))
+                if section_name:
+                    current_section = section_name
+                continue
             headings = [clean_text(h.get_text(" ")) for h in soup.find_all(["h1", "h2", "h3"])]
             headings = [h for h in headings if h and h.lower() not in {"unknown", "未知"}]
-            title = headings[0] if headings else ""
-            subtitle = headings[1] if len(headings) > 1 else ""
+            explicit_title = soup.select_one(".te_article_title")
+            explicit_subtitle = soup.select_one(".te_article_rubric")
+            explicit_section = soup.select_one(".te_section_title")
+            title = clean_text(explicit_title.get_text(" ")) if explicit_title else (headings[0] if headings else "")
+            subtitle = clean_text(explicit_subtitle.get_text(" ")) if explicit_subtitle else (headings[1] if len(headings) > 1 else "")
             # Prefer feed index section name for accurate grouping
             feed_m = re.search(r"feed_(\d+)/", name)
             if feed_m and feed_m.group(1) in feed_sections:
                 section = feed_sections[feed_m.group(1)]
+            elif explicit_section:
+                section = clean_text(explicit_section.get_text(" ")) or current_section
+            elif spine_names:
+                section = current_section
             else:
                 section = headings[2] if len(headings) > 2 else infer_section(name)
             paragraphs = filter_article_paragraphs([clean_text(p.get_text(" ")) for p in soup.find_all(["p", "li"])])
             if len(" ".join(paragraphs).split()) < 80:
                 paragraphs = infer_paragraphs_from_text(clean_text(soup.get_text(" | ")))
-            if len(" ".join(paragraphs).split()) < 80:
+            explicit_article = explicit_title is not None
+            if not explicit_article and len(" ".join(paragraphs).split()) < 80:
                 continue
-            if not is_valid_article_page(name, title, paragraphs, require_article_path=require_article_path):
+            if explicit_article:
+                if len(words(" ".join(paragraphs))) < 8:
+                    continue
+            elif not is_valid_article_page(name, title, paragraphs, require_article_path=require_article_path):
                 continue
             if not title:
                 title = infer_title(paragraphs, fallback=f"Article {index}")
@@ -990,6 +1013,50 @@ def extract_epub_articles(path: Path, source_id: str) -> list[dict[str, Any]]:
             }
             articles.append(enrich_article(article))
     return articles
+
+
+def epub_spine_documents(book: zipfile.ZipFile) -> list[str]:
+    """Return readable EPUB documents in package spine order.
+
+    EPUB 3 books often use opaque filenames. Reading entries in ZIP order (or
+    alphabetically) therefore scrambles articles and loses section boundaries.
+    Invalid or incomplete package metadata simply falls back to the legacy
+    scanner used by :func:`extract_epub_articles`.
+    """
+    names = set(book.namelist())
+    try:
+        container = ET.fromstring(book.read("META-INF/container.xml"))
+        rootfile = next(
+            node for node in container.iter()
+            if node.tag.rsplit("}", 1)[-1] == "rootfile" and node.attrib.get("full-path")
+        )
+        package_path = posixpath.normpath(rootfile.attrib["full-path"].replace("\\", "/"))
+        package = ET.fromstring(book.read(package_path))
+    except (KeyError, StopIteration, ET.ParseError, ValueError):
+        return []
+
+    package_dir = posixpath.dirname(package_path)
+    manifest: dict[str, tuple[str, str]] = {}
+    for node in package.iter():
+        if node.tag.rsplit("}", 1)[-1] != "item" or not node.attrib.get("id"):
+            continue
+        href = node.attrib.get("href", "").split("#", 1)[0]
+        resolved = posixpath.normpath(posixpath.join(package_dir, href.replace("\\", "/")))
+        manifest[node.attrib["id"]] = (resolved, node.attrib.get("properties", ""))
+
+    ordered: list[str] = []
+    for node in package.iter():
+        if node.tag.rsplit("}", 1)[-1] != "itemref":
+            continue
+        entry = manifest.get(node.attrib.get("idref", ""))
+        if not entry:
+            continue
+        resolved, properties = entry
+        if "nav" in properties.split() or not resolved.lower().endswith((".html", ".xhtml")):
+            continue
+        if resolved in names and resolved not in ordered:
+            ordered.append(resolved)
+    return ordered
 
 
 def decode_epub_markup(data: bytes) -> str:

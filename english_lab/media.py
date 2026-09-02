@@ -620,6 +620,79 @@ def list_collections(request: Request) -> dict[str, Any]:
     return {"items": [dict(row) for row in rows]}
 
 
+@router.get("/imports/packages")
+def list_import_packages(request: Request) -> dict[str, Any]:
+    """List audio import jobs together with their reversible deletion state."""
+    user = current_user(request)
+    with connect() as connection:
+        rows = connection.execute(
+            """SELECT import_jobs.*,
+                      COUNT(DISTINCT CASE WHEN import_job_items.status = 'imported'
+                                          THEN import_job_items.media_id END) AS imported_count,
+                      COUNT(DISTINCT CASE WHEN import_job_items.status = 'imported'
+                                               AND media_items.deleted_at IS NULL
+                                          THEN media_items.id END) AS active_count,
+                      COUNT(DISTINCT CASE WHEN import_job_items.status = 'imported'
+                                               AND media_items.deleted_at IS NOT NULL
+                                          THEN media_items.id END) AS deleted_count
+               FROM import_jobs
+               LEFT JOIN import_job_items ON import_job_items.job_id = import_jobs.id
+               LEFT JOIN media_items ON media_items.id = import_job_items.media_id
+               WHERE import_jobs.user_id = ?
+               GROUP BY import_jobs.id
+               ORDER BY import_jobs.created_at DESC
+               LIMIT 200""",
+            (user["id"],),
+        ).fetchall()
+    return {"items": [dict(row) for row in rows]}
+
+
+@router.delete("/imports/{job_id}")
+def delete_import_package(job_id: str, request: Request) -> dict[str, Any]:
+    """Move only media newly created by this import job to the recycle bin."""
+    user = current_user(request)
+    now = utc_now()
+    with transaction() as connection:
+        job = connection.execute(
+            "SELECT id FROM import_jobs WHERE id = ? AND user_id = ?",
+            (job_id, user["id"]),
+        ).fetchone()
+        if not job:
+            raise HTTPException(404, "导入包不存在。")
+        cursor = connection.execute(
+            """UPDATE media_items SET deleted_at = ?, updated_at = ?
+               WHERE deleted_at IS NULL AND id IN (
+                   SELECT media_id FROM import_job_items
+                   WHERE job_id = ? AND status = 'imported' AND media_id IS NOT NULL
+               )""",
+            (now, now, job_id),
+        )
+    return {"ok": True, "moved": cursor.rowcount}
+
+
+@router.post("/imports/{job_id}/restore")
+def restore_import_package(job_id: str, request: Request) -> dict[str, Any]:
+    """Restore media that was newly created by this import job."""
+    user = current_user(request)
+    now = utc_now()
+    with transaction() as connection:
+        job = connection.execute(
+            "SELECT id FROM import_jobs WHERE id = ? AND user_id = ?",
+            (job_id, user["id"]),
+        ).fetchone()
+        if not job:
+            raise HTTPException(404, "导入包不存在。")
+        cursor = connection.execute(
+            """UPDATE media_items SET deleted_at = NULL, updated_at = ?
+               WHERE deleted_at IS NOT NULL AND id IN (
+                   SELECT media_id FROM import_job_items
+                   WHERE job_id = ? AND status = 'imported' AND media_id IS NOT NULL
+               )""",
+            (now, job_id),
+        )
+    return {"ok": True, "restored": cursor.rowcount}
+
+
 @router.post("/imports")
 def create_browser_import(request: Request, spec: ImportJobCreate) -> dict[str, str]:
     user = current_user(request)
