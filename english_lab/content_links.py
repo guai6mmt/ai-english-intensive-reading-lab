@@ -58,7 +58,27 @@ def _source(source_id: str) -> dict[str, Any]:
 def _issue_key(value: str) -> str:
     text = str(value or "")
     match = re.search(r"(20\d{2})[-_. ]?(0[1-9]|1[0-2])[-_. ]?([0-2]\d|3[01])", text)
-    return "-".join(match.groups()) if match else ""
+    if match:
+        return "-".join(match.groups())
+    months = {
+        name.lower(): index
+        for index, name in enumerate(
+            [
+                "January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December",
+            ],
+            1,
+        )
+    }
+    named = re.search(
+        r"\b(" + "|".join(months) + r")[\s._-]+([0-3]?\d)(?:st|nd|rd|th)?[\s,._-]+(20\d{2})\b",
+        text,
+        re.I,
+    )
+    if not named:
+        return ""
+    month, day, year = named.groups()
+    return f"{year}-{months[month.lower()]:02d}-{int(day):02d}"
 
 
 def _canonical_section(value: str) -> str:
@@ -118,6 +138,80 @@ def _duration_score(article: dict[str, Any], media: dict[str, Any]) -> float:
     return 0.0
 
 
+def _alignment_score(
+    article: dict[str, Any],
+    media: dict[str, Any],
+    article_index: int,
+    media_index: int,
+) -> float:
+    """Score a monotonic article/audio pair, including weak editorial labels."""
+    title = _title_score(str(article.get("title") or ""), str(media.get("audio_label") or ""))
+    duration = _duration_score(article, media)
+    distance = abs(article_index - media_index)
+    order = max(0.0, 0.12 - distance * 0.05)
+    return title * 0.65 + duration * 0.23 + order
+
+
+def _monotonic_section_alignment(
+    articles: list[dict[str, Any]],
+    media: list[dict[str, Any]],
+) -> dict[int, tuple[int, float]]:
+    """Align a section in order while allowing omitted print or audio items.
+
+    Audio-edition labels are often rubrics (for example ``Our cover``) rather
+    than article headlines. A sequence alignment lets order and duration carry
+    those weak-title cases without shifting the rest of a section when one
+    visual-only print article has no audio.
+    """
+    article_count, media_count = len(articles), len(media)
+    if not article_count or not media_count:
+        return {}
+    negative = float("-inf")
+    scores = [[negative] * (media_count + 1) for _ in range(article_count + 1)]
+    previous: list[list[tuple[int, int, str] | None]] = [
+        [None] * (media_count + 1) for _ in range(article_count + 1)
+    ]
+    scores[0][0] = 0.0
+    for article_index in range(article_count + 1):
+        for media_index in range(media_count + 1):
+            current = scores[article_index][media_index]
+            if current == negative:
+                continue
+            if article_index < article_count:
+                candidate = current - 0.04
+                if candidate > scores[article_index + 1][media_index]:
+                    scores[article_index + 1][media_index] = candidate
+                    previous[article_index + 1][media_index] = (article_index, media_index, "article-gap")
+            if media_index < media_count:
+                candidate = current - 0.08
+                if candidate > scores[article_index][media_index + 1]:
+                    scores[article_index][media_index + 1] = candidate
+                    previous[article_index][media_index + 1] = (article_index, media_index, "media-gap")
+            if article_index < article_count and media_index < media_count:
+                quality = _alignment_score(
+                    articles[article_index], media[media_index], article_index, media_index
+                )
+                candidate = current + 0.24 + quality
+                if candidate > scores[article_index + 1][media_index + 1]:
+                    scores[article_index + 1][media_index + 1] = candidate
+                    previous[article_index + 1][media_index + 1] = (article_index, media_index, "match")
+
+    aligned: dict[int, tuple[int, float]] = {}
+    article_index, media_index = article_count, media_count
+    while article_index or media_index:
+        step = previous[article_index][media_index]
+        if step is None:
+            break
+        old_article, old_media, action = step
+        if action == "match":
+            aligned[old_article] = (
+                old_media,
+                _alignment_score(articles[old_article], media[old_media], old_article, old_media),
+            )
+        article_index, media_index = old_article, old_media
+    return aligned
+
+
 def _collection_items(collection_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     with connect() as connection:
         collection = connection.execute("SELECT * FROM collections WHERE id = ?", (collection_id,)).fetchone()
@@ -170,23 +264,16 @@ def _automatic_candidates(source: dict[str, Any], collection: dict[str, Any], me
     for section_key, articles in article_groups.items():
         available = media_groups.get(section_key, [])
         equal_counts = bool(available) and len(articles) == len(available)
-        unused = set(range(len(available)))
+        alignment = (
+            {index: (index, _alignment_score(article, available[index], index, index))
+             for index, article in enumerate(articles)}
+            if equal_counts
+            else _monotonic_section_alignment(articles, available)
+        )
         for index, article in enumerate(articles):
-            chosen_index: int | None = index if equal_counts else None
-            score = 0.0
-            if chosen_index is None and available:
-                ranked = sorted(
-                    ((
-                        _title_score(str(article.get("title") or ""), str(item.get("audio_label") or ""))
-                        + _duration_score(article, item) * 0.18
-                        + (0.08 if candidate_index == index else 0.0),
-                        candidate_index,
-                    )
-                     for candidate_index, item in enumerate(available) if candidate_index in unused),
-                    reverse=True,
-                )
-                if ranked and ranked[0][0] >= 0.38:
-                    score, chosen_index = ranked[0]
+            aligned = alignment.get(index)
+            chosen_index = aligned[0] if aligned else None
+            alignment_score = aligned[1] if aligned else 0.0
             if chosen_index is None or chosen_index >= len(available):
                 result.append({
                     "article_id": article.get("id"), "article_title": article.get("title"),
@@ -196,17 +283,21 @@ def _automatic_candidates(source: dict[str, Any], collection: dict[str, Any], me
                     "reason": "没有找到同栏目且足够可靠的音频，请手动选择。",
                 })
                 continue
-            unused.discard(chosen_index)
             item = available[chosen_index]
-            score = score or _title_score(str(article.get("title") or ""), str(item.get("audio_label") or ""))
-            confidence = 0.78
-            reason = "同栏目内按顺序匹配"
+            title_score = _title_score(str(article.get("title") or ""), str(item.get("audio_label") or ""))
+            confidence = 0.78 if equal_counts else 0.7
+            reason = "同栏目内按顺序匹配" if equal_counts else "同栏目内按顺序对齐，栏目数量不同"
             if equal_counts:
                 confidence += 0.08
                 reason += "，栏目数量一致"
+            elif alignment_score >= 0.3:
+                confidence += 0.05
+                reason += "，标题/时长支持该位置"
+            else:
+                reason += "，建议人工复核"
             if issue_matches:
                 confidence += 0.04
-            if score >= 0.2:
+            if title_score >= 0.2:
                 confidence += 0.04
                 reason += "，标题关键词相符"
             duration_score = _duration_score(article, item)
@@ -219,6 +310,9 @@ def _automatic_candidates(source: dict[str, Any], collection: dict[str, Any], me
             if item.get("section_inferred"):
                 confidence -= 0.22
                 reason += "；音频栏目由相邻曲目推断"
+            if not equal_counts and title_score < 0.45:
+                confidence = min(confidence, 0.79)
+                reason += "；栏目数量或标题不完全一致，请确认"
             confidence = max(0.0, min(0.99, confidence))
             result.append({
                 "article_id": article.get("id"), "article_title": article.get("title"),

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import zipfile
 
-from app import extract_epub_articles
+from app import EPUB_PARSER_VERSION, _migrate_library_inplace, extract_epub_articles
 
 
 def test_epub3_spine_order_sections_and_short_articles(tmp_path):
@@ -40,3 +40,17 @@ def test_epub3_spine_order_sections_and_short_articles(tmp_path):
     assert [article["title"] for article in articles] == ["First story", "Second story"]
     assert [article["section"] for article in articles] == ["Science", "Science"]
     assert articles[0]["subtitle"] == "A short report"
+
+    stale = {
+        "id": "source",
+        "filename": "opaque.epub",
+        "stored_path": str(epub),
+        "parser_version": 0,
+        "cover_file": None,
+        "articles": [{**articles[0], "section": "Articles", "favorite": True}],
+    }
+    library = {"sources": [stale]}
+    assert _migrate_library_inplace(library) is True
+    assert stale["parser_version"] == EPUB_PARSER_VERSION
+    assert [article["section"] for article in stale["articles"]] == ["Science", "Science"]
+    assert stale["articles"][0]["favorite"] is True

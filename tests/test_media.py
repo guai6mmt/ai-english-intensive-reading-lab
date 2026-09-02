@@ -164,3 +164,30 @@ def test_import_package_can_be_recycled_and_restored(authenticated_client):
     assert client.delete(f"/api/v1/media/imports/{duplicate_job}", headers=headers).json()["moved"] == 0
     active_ids = {item["id"] for item in client.get("/api/v1/media/items").json()["items"]}
     assert set(media_ids) <= active_ids
+
+    assert client.delete(f"/api/v1/media/imports/{job_id}", headers=headers).json()["moved"] == 2
+    reimport_job = client.post(
+        "/api/v1/media/imports",
+        headers=headers,
+        json={"total_files": 2, "source": "pytest-package-reimported"},
+    ).json()["job_id"]
+    for index, seconds in enumerate((0.31, 0.41), 1):
+        response = client.post(
+            f"/api/v1/media/imports/{reimport_job}/file",
+            headers=headers,
+            files={"file": (f"part-{index}.wav", wav_bytes(seconds), "audio/wav")},
+            data={"relative_path": f"Pytest Package Reimported/part-{index}.wav"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "restored"
+    client.post(f"/api/v1/media/imports/{reimport_job}/complete", headers=headers)
+
+    packages = client.get("/api/v1/media/imports/packages").json()["items"]
+    current = next(item for item in packages if item["id"] == reimport_job)
+    previous = next(item for item in packages if item["id"] == job_id)
+    assert (current["imported_count"], current["active_count"]) == (2, 2)
+    assert (previous["imported_count"], previous["active_count"]) == (0, 0)
+    items = client.get("/api/v1/media/items").json()["items"]
+    reimported = [item for item in items if item["id"] in media_ids]
+    assert len(reimported) == 2
+    assert {item["collection_name"] for item in reimported} == {"Pytest Package Reimported"}

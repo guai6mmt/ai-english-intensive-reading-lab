@@ -156,9 +156,38 @@ def _ensure_collection(connection: sqlite3.Connection, folder: str) -> str | Non
 def _find_duplicate(sha256: str) -> sqlite3.Row | None:
     with connect() as connection:
         return connection.execute(
-            "SELECT id, title, original_name, deleted_at FROM media_items WHERE sha256 = ?",
+            "SELECT id, title, original_name, storage_path, deleted_at FROM media_items WHERE sha256 = ?",
             (sha256,),
         ).fetchone()
+
+
+def _restore_deleted_duplicate(
+    duplicate: sqlite3.Row,
+    source: Path,
+    relative_path: str,
+    *,
+    move_source: bool,
+) -> tuple[str, str, str]:
+    """Restore a soft-deleted duplicate and transfer it to the new import package."""
+    original_name = Path(relative_path).name or source.name
+    parent = str(Path(relative_path).parent).replace("\\", "/")
+    if parent == ".":
+        parent = ""
+    now = utc_now()
+    with transaction() as connection:
+        collection_id = _ensure_collection(connection, parent)
+        cursor = connection.execute(
+            """UPDATE media_items
+               SET collection_id = ?, original_name = ?, relative_path = ?,
+                   deleted_at = NULL, updated_at = ?
+               WHERE id = ? AND deleted_at IS NOT NULL""",
+            (collection_id, original_name, relative_path, now, duplicate["id"]),
+        )
+    if move_source:
+        source.unlink(missing_ok=True)
+    if cursor.rowcount:
+        return "restored", duplicate["id"], "已从回收站恢复并重新加入本次导入包"
+    return "duplicate", duplicate["id"], f"与“{duplicate['title']}”内容相同"
 
 
 def _import_local_file(source: Path, relative_path: str, *, move_source: bool) -> tuple[str, str, str]:
@@ -171,16 +200,20 @@ def _import_local_file(source: Path, relative_path: str, *, move_source: bool) -
     if source.stat().st_size > config.max_upload_bytes:
         raise ValueError("文件超过服务器允许的最大大小")
 
+    normalized_relative = _safe_relative_path(relative_path, source.name)
     digest = _sha256(source)
     duplicate = _find_duplicate(digest)
     if duplicate:
+        if duplicate["deleted_at"]:
+            return _restore_deleted_duplicate(
+                duplicate, source, normalized_relative, move_source=move_source
+            )
         if move_source:
             source.unlink(missing_ok=True)
         return "duplicate", duplicate["id"], f"与“{duplicate['title']}”内容相同"
 
     probe = _probe_audio(source)
     tags = probe.get("tags") or {}
-    normalized_relative = _safe_relative_path(relative_path, source.name)
     original_name = Path(normalized_relative).name or source.name
     title = str(tags.get("title") or Path(normalized_relative).stem or source.stem).strip()
     parent = str(Path(normalized_relative).parent).replace("\\", "/")
@@ -254,10 +287,18 @@ def _create_job(user_id: str, kind: str, source: str, total_files: int) -> str:
 def _record_job_item(job_id: str, relative_path: str, status: str, media_id: str | None, message: str) -> None:
     counter = {
         "imported": "imported_files",
+        "restored": "imported_files",
         "duplicate": "duplicate_files",
         "failed": "failed_files",
     }.get(status)
     with transaction() as connection:
+        if status == "restored" and media_id:
+            connection.execute(
+                """UPDATE import_job_items
+                   SET status = 'superseded', message = '已由后续导入包重新导入'
+                   WHERE media_id = ? AND job_id <> ? AND status IN ('imported', 'restored')""",
+                (media_id, job_id),
+            )
         existing = connection.execute(
             """SELECT id FROM import_job_items
                WHERE job_id = ? AND relative_path = ? AND status = 'pending'
@@ -627,12 +668,12 @@ def list_import_packages(request: Request) -> dict[str, Any]:
     with connect() as connection:
         rows = connection.execute(
             """SELECT import_jobs.*,
-                      COUNT(DISTINCT CASE WHEN import_job_items.status = 'imported'
+                      COUNT(DISTINCT CASE WHEN import_job_items.status IN ('imported', 'restored')
                                           THEN import_job_items.media_id END) AS imported_count,
-                      COUNT(DISTINCT CASE WHEN import_job_items.status = 'imported'
+                      COUNT(DISTINCT CASE WHEN import_job_items.status IN ('imported', 'restored')
                                                AND media_items.deleted_at IS NULL
                                           THEN media_items.id END) AS active_count,
-                      COUNT(DISTINCT CASE WHEN import_job_items.status = 'imported'
+                      COUNT(DISTINCT CASE WHEN import_job_items.status IN ('imported', 'restored')
                                                AND media_items.deleted_at IS NOT NULL
                                           THEN media_items.id END) AS deleted_count
                FROM import_jobs
@@ -663,7 +704,7 @@ def delete_import_package(job_id: str, request: Request) -> dict[str, Any]:
             """UPDATE media_items SET deleted_at = ?, updated_at = ?
                WHERE deleted_at IS NULL AND id IN (
                    SELECT media_id FROM import_job_items
-                   WHERE job_id = ? AND status = 'imported' AND media_id IS NOT NULL
+                   WHERE job_id = ? AND status IN ('imported', 'restored') AND media_id IS NOT NULL
                )""",
             (now, now, job_id),
         )
@@ -686,7 +727,7 @@ def restore_import_package(job_id: str, request: Request) -> dict[str, Any]:
             """UPDATE media_items SET deleted_at = NULL, updated_at = ?
                WHERE deleted_at IS NOT NULL AND id IN (
                    SELECT media_id FROM import_job_items
-                   WHERE job_id = ? AND status = 'imported' AND media_id IS NOT NULL
+                   WHERE job_id = ? AND status IN ('imported', 'restored') AND media_id IS NOT NULL
                )""",
             (now, job_id),
         )

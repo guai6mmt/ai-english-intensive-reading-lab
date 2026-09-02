@@ -67,6 +67,7 @@ SETTINGS_KEY_PATH = DATA_DIR / ".settings.key"
 
 SUPPORTED_EXTENSIONS = {".epub", ".docx", ".txt"}
 MAX_AI_CHARS = 10000
+EPUB_PARSER_VERSION = 2
 
 AI_PROVIDERS = {
     "deepseek": {
@@ -3003,9 +3004,18 @@ def _migrate_library_inplace(library: dict[str, Any]) -> bool:
     library changed (so the caller persists it once)."""
     changed = False
     for source in library.get("sources", []):
+        stored = source.get("stored_path") or ""
+        if (
+            str(stored).lower().endswith(".epub")
+            and int(source.get("parser_version") or 0) < EPUB_PARSER_VERSION
+            and Path(stored).is_file()
+        ):
+            refreshed = parse_upload(Path(stored), str(source.get("id") or ""))
+            _replace_source_articles(source, refreshed)
+            source["parser_version"] = EPUB_PARSER_VERSION
+            changed = True
         if "cover_file" not in source:
             cover_file = None
-            stored = source.get("stored_path") or ""
             if str(stored).lower().endswith(".epub") and Path(stored).exists():
                 data = extract_epub_cover(Path(stored))
                 if data:
@@ -3017,6 +3027,18 @@ def _migrate_library_inplace(library: dict[str, Any]) -> bool:
                 enrich_article(article)
                 changed = True
     return changed
+
+
+def _replace_source_articles(source: dict[str, Any], articles: list[dict[str, Any]]) -> None:
+    """Replace parsed content while retaining user work keyed by stable article id."""
+    old_by_id = {str(item.get("id")): item for item in source.get("articles", [])}
+    for article in articles:
+        previous = old_by_id.get(str(article.get("id"))) or {}
+        for field in _AI_PRESERVE_FIELDS:
+            if field in previous:
+                article[field] = previous[field]
+    source["articles"] = articles
+    source["article_count"] = len(articles)
 
 
 @app.get("/api/library")
@@ -3042,6 +3064,18 @@ async def upload_file(file: UploadFile = File(...)) -> dict[str, Any]:
     library = load_json(LIBRARY_PATH, {"sources": []})
     existing = find_duplicate_source(library, content_hash)
     if existing:
+        if suffix == ".epub" and int(existing.get("parser_version") or 0) < EPUB_PARSER_VERSION:
+            try:
+                refreshed = parse_upload(saved_path, str(existing.get("id") or source_id))
+            except Exception as exc:
+                safe_unlink(saved_path)
+                raise HTTPException(400, f"文件重新解析失败：{exc}") from exc
+            if not refreshed:
+                safe_unlink(saved_path)
+                raise HTTPException(400, "没有解析到可学习的文章。")
+            _replace_source_articles(existing, refreshed)
+            existing["parser_version"] = EPUB_PARSER_VERSION
+            save_json(LIBRARY_PATH, library)
         safe_unlink(saved_path)
         return {"source": existing, "summary": library_summary(library), "duplicate": True}
     try:
@@ -3067,6 +3101,7 @@ async def upload_file(file: UploadFile = File(...)) -> dict[str, Any]:
         "content_hash": content_hash,
         "uploaded_at": now_iso(),
         "article_count": len(articles),
+        "parser_version": EPUB_PARSER_VERSION if suffix == ".epub" else 1,
         "cover_file": cover_file,
         "articles": articles,
     }

@@ -4,6 +4,7 @@ import json
 import uuid
 
 from english_lab.config import config
+from english_lab.content_links import _automatic_candidates, _issue_key
 from english_lab.database import transaction, utc_now
 
 
@@ -111,3 +112,36 @@ def test_preview_and_manual_pairing(authenticated_client):
     linked = next(item for item in media if item["id"] == media_ids[2])
     assert linked["linked_article_id"] == article_ids[2]
     _cleanup_pairing_content(source_id, collection_id, media_ids)
+
+
+def test_partial_section_uses_monotonic_order_for_editorial_audio_labels():
+    assert _issue_key("The-Economist-Audio-Edition-August-29-2026") == "2026-08-29"
+    articles = [
+        {
+            "id": f"leader-{index}",
+            "section": "Leaders",
+            "title": title,
+            "stats": {"word_count": words},
+        }
+        for index, (title, words) in enumerate([
+            ("The Unwelcoming States of America", 978),
+            ("Mark Carney must beware an all-out trade war", 667),
+            ("America will regret Scott Bessent’s bond-market misadventures", 704),
+            ("America’s new sanctions are unlikely to topple Iran’s regime", 732),
+            ("When obeying an American law means breaking a Chinese one", 731),
+        ])
+    ]
+    media = [
+        {"id": "audio-5", "title": "005 Leaders - Our cover", "duration_ms": 436_036},
+        {"id": "audio-6", "title": "006 Leaders - America and Canada", "duration_ms": 286_389},
+        {"id": "audio-7", "title": "007 Leaders - Government borrowing", "duration_ms": 276_115},
+    ]
+
+    candidates = _automatic_candidates(
+        {"filename": "TE-2026-08-29-EPUB.epub", "articles": articles},
+        {"name": "TE-2026-08-29 Audio"},
+        media,
+    )
+
+    assert [item["media_id"] for item in candidates] == ["audio-5", "audio-6", "audio-7", None, None]
+    assert all(item["status"] == "review" for item in candidates[:3])
