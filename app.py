@@ -13,6 +13,7 @@ import posixpath
 import re
 import requests
 import shutil
+import subprocess
 import struct
 import threading
 import time
@@ -37,7 +38,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from english_lab.config import config as server_config
-from english_lab.database import initialize_database
+from english_lab.database import connect, initialize_database
 
 try:
     from openai import OpenAI
@@ -375,7 +376,7 @@ def finish_job(task_id: str, result: Any = None, error: str | None = None) -> No
             job["result"] = result
             job["stage"] = "ready"
             job["pct"] = 100
-            job["msg"] = "时间轴已就绪"
+            job["msg"] = "正文核验完成" if job["kind"] == "content_pairing" else "时间轴已就绪"
 
 
 def get_job(task_id: str) -> dict[str, Any] | None:
@@ -5207,10 +5208,14 @@ VIDEO_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Server extensions are kept in separate modules so the established reading
 # routes remain compatible while authentication and the media library evolve.
-from english_lab.auth import SessionAuthMiddleware, router as auth_router  # noqa: E402
+from english_lab.auth import SessionAuthMiddleware, current_user, router as auth_router  # noqa: E402
 from english_lab.health import router as health_router  # noqa: E402
 from english_lab.media import import_audio_zip, router as media_router  # noqa: E402
 from english_lab.content_links import (  # noqa: E402
+    PairPreviewRequest,
+    apply_content_transcripts,
+    content_matching_source,
+    content_verification_media_ids,
     linked_media_for_article,
     linked_media_source_for_article,
     linked_media_summaries,
@@ -5226,6 +5231,261 @@ from english_lab.vocabulary import (  # noqa: E402
     router as vocabulary_router,
 )
 from english_lab.webdav import router as webdav_api_router, webdav_routes  # noqa: E402
+
+
+CONTENT_MATCH_CACHE_DIR = AUDIO_CACHE_DIR / "content_match"
+CONTENT_MATCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _content_match_media(media_id: str) -> dict[str, Any]:
+    with connect() as connection:
+        row = connection.execute(
+            """SELECT id, collection_id, title, original_name, storage_path, mime_type,
+                      sha256, duration_ms, file_size
+               FROM media_items WHERE id = ? AND deleted_at IS NULL""",
+            (media_id,),
+        ).fetchone()
+    if not row:
+        raise PipelineError("正文核验所需的音频不存在或已在回收站。")
+    payload = dict(row)
+    path = (server_config.media_root / payload.pop("storage_path")).resolve()
+    if not path.is_relative_to(server_config.media_root) or not path.is_file():
+        raise PipelineError(f"音频文件不存在：{payload.get('title') or media_id}")
+    payload["path"] = path
+    return payload
+
+
+def _content_sample_windows(duration_ms: int | None) -> list[tuple[float, float]]:
+    duration = max(0.0, float(duration_ms or 0) / 1000)
+    if duration and duration <= 105:
+        start = min(6.0, max(0.0, duration * 0.08))
+        return [(round(start, 2), round(max(8.0, min(82.0, duration - start)), 2))]
+    segment = 28.0
+    if duration <= 0:
+        return [(12.0, segment), (90.0, segment), (180.0, segment)]
+    starts = [12.0, duration / 3, duration * 2 / 3]
+    windows: list[tuple[float, float]] = []
+    for start in starts:
+        start = max(0.0, min(start, max(0.0, duration - segment - 2)))
+        length = max(8.0, min(segment, duration - start))
+        if not any(abs(start - existing[0]) < 6 for existing in windows):
+            windows.append((round(start, 2), round(length, 2)))
+    return windows
+
+
+def _extract_content_sample(media: dict[str, Any], output: Path) -> list[tuple[float, float]]:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise PipelineError("正文核验需要服务器安装 ffmpeg，用于抽取少量音频片段。")
+    windows = _content_sample_windows(media.get("duration_ms"))
+    filters: list[str] = []
+    labels: list[str] = []
+    for index, (start, duration) in enumerate(windows):
+        label = f"a{index}"
+        labels.append(f"[{label}]")
+        filters.append(
+            f"[0:a]atrim=start={start}:duration={duration},asetpts=PTS-STARTPTS[{label}]"
+        )
+    if len(labels) == 1:
+        filters.append(f"{labels[0]}anull[out]")
+    else:
+        filters.append(f"{''.join(labels)}concat=n={len(labels)}:v=0:a=1[out]")
+    command = [
+        ffmpeg, "-nostdin", "-y", "-v", "error", "-i", str(media["path"]),
+        "-filter_complex", ";".join(filters), "-map", "[out]",
+        "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(output),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
+    if completed.returncode != 0 or not output.is_file() or output.stat().st_size < 1024:
+        detail = (completed.stderr or "无法生成音频抽样").strip()[-500:]
+        raise PipelineError(f"抽取音频片段失败：{detail}")
+    return windows
+
+
+def _content_cache_path(media: dict[str, Any], model: str) -> Path:
+    key = hashlib.sha1(
+        f"{media.get('sha256')}|{media.get('file_size')}|{model}|sample-v1".encode("utf-8")
+    ).hexdigest()
+    return CONTENT_MATCH_CACHE_DIR / f"{key}.json"
+
+
+def _transcript_text(payload: dict[str, Any]) -> str:
+    sentences = extract_asr_sentences(payload)
+    if sentences:
+        return clean_text(" ".join(item["text"] for item in sentences))
+    values: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key.lower() in {"text", "transcript", "transcription"} and isinstance(value, str):
+                    cleaned = clean_text(value)
+                    if len(cleaned.split()) >= 5:
+                        values.append(cleaned)
+                elif isinstance(value, (dict, list)):
+                    walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(payload)
+    return clean_text(" ".join(dict.fromkeys(values)))
+
+
+def _transcribe_content_sample(
+    media: dict[str, Any],
+    progress: Callable[[int, str], None] | None = None,
+) -> tuple[str, bool]:
+    asr = qwen_asr_config()
+    cache_path = _content_cache_path(media, asr["model"])
+    cached = load_json(cache_path, {})
+    if len(str(cached.get("transcript") or "").split()) >= 8:
+        return str(cached["transcript"]), True
+    oss = oss_config()
+    if not asr.get("api_key"):
+        raise PipelineError(f"{asr['api_key_env']} 未配置，无法进行正文核验。")
+    if not all(oss.get(key) for key in ("access_key_id", "access_key_secret", "bucket", "endpoint")):
+        raise PipelineError("正文核验需要在设置中配置 OSS，用于向 ASR 提供临时音频片段。")
+
+    sample_path = cache_path.with_suffix(".sample.wav")
+    object_key = f"{oss['temp_prefix']}content-match-{cache_path.stem}.wav"
+    bucket = None
+    task_id = ""
+    try:
+        if progress:
+            progress(8, "抽取开头和正文中段样本…")
+        windows = _extract_content_sample(media, sample_path)
+        if progress:
+            progress(20, "上传临时音频样本…")
+        bucket, signed_url = upload_temp_audio_file_to_oss(sample_path, object_key, "audio/wav", expires=1800)
+        if progress:
+            progress(30, "提交抽样语音识别…")
+        task_id, meta = start_qwen_filetranscription(signed_url, enable_words=False)
+
+        def tick(elapsed: int, status: str) -> None:
+            if progress:
+                progress(35 + min(50, int(elapsed / 180 * 50)), f"识别中 · {status}")
+
+        task_result = poll_qwen_asr_task(
+            task_id, asr["base_url"], asr["api_key"], timeout_seconds=240, on_tick=tick
+        )
+        transcript_payload = fetch_qwen_transcription(task_result)
+        transcript = _transcript_text(transcript_payload)
+        if len(transcript.split()) < 8:
+            raise PipelineError("抽样识别没有返回足够的英文正文。")
+        save_json(cache_path, {
+            "media_id": media["id"],
+            "sha256": media.get("sha256"),
+            "transcript": transcript,
+            "windows": windows,
+            "meta": {**meta, "task_id": task_id, "algorithm": "sample-v1"},
+            "created_at": now_iso(),
+        })
+        if progress:
+            progress(95, "正文样本识别完成")
+        return transcript, False
+    finally:
+        sample_path.unlink(missing_ok=True)
+        if bucket is not None:
+            try:
+                bucket.delete_object(object_key)
+            except Exception:
+                pass
+
+
+def _run_content_pairing(
+    source_id: str,
+    collection_id: str,
+    progress_cb: Callable[[str, int, str], None],
+) -> dict[str, Any]:
+    base = preview_content_pairing(source_id, collection_id)
+    source = content_matching_source(source_id)
+    selected_ids = content_verification_media_ids(base)
+    if not selected_ids:
+        base["content_verification"] = {
+            "requested": 0, "transcribed": 0, "cached": 0, "failed": 0,
+            "message": "现有元数据匹配已经全部达到高置信度，无需调用 ASR。",
+        }
+        return base
+    transcripts: dict[str, str] = {}
+    failures: list[str] = []
+    cached_count = 0
+    total = len(selected_ids)
+    for index, media_id in enumerate(selected_ids):
+        media = _content_match_media(media_id)
+        title = str(media.get("title") or media.get("original_name") or media_id)
+        base_pct = int(index / total * 88)
+
+        def item_progress(local_pct: int, message: str) -> None:
+            overall = base_pct + int(local_pct / max(1, total) * 0.88)
+            progress_cb("content_asr", min(90, overall), f"{index + 1}/{total} · {title} · {message}")
+
+        try:
+            transcript, cached = _transcribe_content_sample(media, item_progress)
+            transcripts[media_id] = transcript
+            cached_count += int(cached)
+        except Exception as exc:
+            failures.append(f"{title}: {str(exc)[:180]}")
+    if not transcripts:
+        raise PipelineError(failures[0] if failures else "没有得到可用于正文核验的音频文本。")
+    progress_cb("content_compare", 94, "比较音频样本与候选文章正文…")
+    result = apply_content_transcripts(base, source, transcripts)
+    result["content_verification"] = {
+        "requested": total,
+        "transcribed": len(transcripts),
+        "cached": cached_count,
+        "failed": len(failures),
+        "errors": failures[:10],
+        "provider": "qwen",
+        "method": "three-window-sample-v1",
+    }
+    return result
+
+
+@app.post("/api/v1/content-links/content-match/start")
+def content_pairing_start(spec: PairPreviewRequest, request: Request) -> dict[str, Any]:
+    current_user(request)
+    # Validate both ids before creating a background task.
+    preview_content_pairing(spec.source_id, spec.collection_id)
+    key = stable_id("content-pairing", spec.source_id, spec.collection_id, "sample-v1")
+    existing = find_job_by_key("content_pairing", key)
+    if existing:
+        return {"task_id": existing["task_id"], "cached": False, "existing": True}
+    task_id = create_job("content_pairing", key=key)
+
+    def worker() -> None:
+        try:
+            def progress(stage: str, pct: int, msg: str) -> None:
+                update_job(task_id, stage=stage, pct=pct, msg=msg)
+            result = _run_content_pairing(spec.source_id, spec.collection_id, progress)
+            finish_job(task_id, result=result)
+        except HTTPException as exc:
+            finish_job(task_id, error=str(exc.detail))
+        except Exception as exc:
+            finish_job(task_id, error=str(exc))
+
+    threading.Thread(target=worker, daemon=True, name=f"content-pair-{task_id[:8]}").start()
+    return {"task_id": task_id, "cached": False, "existing": False}
+
+
+@app.get("/api/v1/content-links/content-match/status/{task_id}")
+def content_pairing_status(task_id: str, request: Request) -> dict[str, Any]:
+    current_user(request)
+    job = get_job(task_id)
+    if not job or job.get("kind") != "content_pairing":
+        raise HTTPException(404, "正文核验任务不存在或已经过期。")
+    payload = {
+        "task_id": task_id,
+        "stage": job["stage"],
+        "pct": job["pct"],
+        "msg": job["msg"],
+        "finished_at": job["finished_at"],
+    }
+    if job.get("error"):
+        payload["error"] = job["error"]
+    if job.get("result"):
+        payload["result"] = job["result"]
+    return payload
 
 app.include_router(health_router)
 app.include_router(auth_router)

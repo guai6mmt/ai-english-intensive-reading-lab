@@ -431,6 +431,7 @@ function pairStatus(candidate) {
   if (candidate.status === "confirmed") return ["已确认", "confirmed"];
   if (!candidate.media_id) return ["待手动匹配", "unmatched"];
   if (candidate.match_method === "manual") return ["人工选择", "manual"];
+  if (candidate.match_method === "content") return ["正文核验", "matched"];
   if (candidate.status === "review") return ["建议复核", "review"];
   return ["自动匹配", "matched"];
 }
@@ -506,13 +507,7 @@ async function previewPairing() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ source_id: sourceId, collection_id: collectionId }),
     });
-    state.pairing.candidates = data.candidates || [];
-    state.pairing.media = data.media_options || [];
-    state.pairing.original = new Map(state.pairing.candidates.map((item) => [item.article_id, item.media_id || ""]));
-    const summary = data.summary || {};
-    $("pairSummary").hidden = false;
-    $("pairSummary").innerHTML = `<div><b>${summary.articles || 0}</b><span>文章</span></div><div><b>${summary.audio || 0}</b><span>音频</span></div><div><b>${summary.matched || 0}</b><span>已匹配</span></div><div><b>${summary.review || 0}</b><span>建议复核</span></div><div><b>${summary.unmatched || 0}</b><span>待手动</span></div>`;
-    renderPairing();
+    applyPairingData(data);
   } catch (error) {
     $("pairNotice").hidden = false;
     $("pairNotice").textContent = error.message;
@@ -523,11 +518,61 @@ async function previewPairing() {
   }
 }
 
+function applyPairingData(data) {
+  state.pairing.candidates = data.candidates || [];
+  state.pairing.media = data.media_options || [];
+  state.pairing.original = new Map(state.pairing.candidates.map((item) => [item.article_id, item.media_id || ""]));
+  const summary = data.summary || {};
+  $("pairSummary").hidden = false;
+  $("pairSummary").innerHTML = `<div><b>${summary.articles || 0}</b><span>文章</span></div><div><b>${summary.audio || 0}</b><span>音频</span></div><div><b>${summary.matched || 0}</b><span>已匹配</span></div><div><b>${summary.review || 0}</b><span>建议复核</span></div><div><b>${summary.unmatched || 0}</b><span>待手动</span></div>`;
+  renderPairing();
+}
+
+async function contentMatchPairing() {
+  const sourceId = $("pairSourceSelect").value;
+  const collectionId = $("pairCollectionSelect").value;
+  if (!sourceId || !collectionId) return;
+  const button = $("contentMatchBtn");
+  button.disabled = true;
+  $("previewPairBtn").disabled = true;
+  button.textContent = "准备核验…";
+  $("pairNotice").hidden = false;
+  $("pairNotice").classList.remove("is-error");
+  try {
+    const started = await api("/api/v1/content-links/content-match/start", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_id: sourceId, collection_id: collectionId }),
+    });
+    while (true) {
+      const status = await api(`/api/v1/content-links/content-match/status/${started.task_id}`);
+      button.textContent = `正文核验 ${status.pct || 0}%`;
+      $("pairNotice").textContent = status.msg || "正在核验音频正文…";
+      if (status.error) throw new Error(status.error);
+      if (status.result) {
+        applyPairingData(status.result);
+        const info = status.result.content_verification || {};
+        $("pairNotice").textContent = info.requested
+          ? `正文核验完成：处理 ${info.transcribed || 0}/${info.requested} 条，使用缓存 ${info.cached || 0} 条，正文确认 ${status.result.summary?.content_verified || 0} 组。`
+          : (info.message || "现有匹配已经达到高置信度。");
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  } catch (error) {
+    $("pairNotice").classList.add("is-error");
+    $("pairNotice").textContent = error.message;
+  } finally {
+    button.disabled = false;
+    $("previewPairBtn").disabled = false;
+    button.textContent = "正文核验";
+  }
+}
+
 async function confirmPairing() {
   const links = state.pairing.candidates.filter((item) => item.media_id).map((item) => ({
     article_id: item.article_id,
     media_id: item.media_id,
-    match_method: item.match_method === "manual" ? "manual" : "automatic",
+    match_method: ["manual", "content"].includes(item.match_method) ? item.match_method : "automatic",
     confidence: item.match_method === "manual" ? 1 : Number(item.confidence || 0),
   }));
   $("confirmPairBtn").disabled = true;
@@ -603,6 +648,7 @@ $("closePairBtn").addEventListener("click", () => {
   $("pairDialog").close();
 });
 $("previewPairBtn").addEventListener("click", () => previewPairing());
+$("contentMatchBtn").addEventListener("click", () => contentMatchPairing());
 $("confirmPairBtn").addEventListener("click", () => confirmPairing());
 $("pairSourceSelect").addEventListener("change", () => {
   const source = state.pairing.options?.sources?.find((item) => item.id === $("pairSourceSelect").value);

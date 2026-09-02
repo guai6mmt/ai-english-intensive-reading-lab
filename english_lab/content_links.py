@@ -318,10 +318,205 @@ def _automatic_candidates(source: dict[str, Any], collection: dict[str, Any], me
                 "article_id": article.get("id"), "article_title": article.get("title"),
                 "section": section_labels.get(section_key, "Articles"), "media_id": item.get("id"),
                 "media_title": item.get("title"), "confidence": round(confidence, 2),
+                "metadata_title_score": round(title_score, 3),
                 "match_method": "automatic", "status": "matched" if confidence >= 0.8 else "review",
                 "confirmed": False, "reason": reason,
             })
     return result
+
+
+_CONTENT_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "been", "being", "but", "by",
+    "for", "from", "had", "has", "have", "he", "her", "his", "in", "is", "it",
+    "its", "of", "on", "or", "she", "that", "the", "their", "them", "they", "this",
+    "to", "was", "were", "will", "with", "would", "you",
+}
+
+
+def _content_tokens(value: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+(?:'[a-z]+)?", str(value or "").lower().replace("’", "'"))
+
+
+def _ngrams(tokens: list[str], size: int) -> set[tuple[str, ...]]:
+    return {tuple(tokens[index:index + size]) for index in range(max(0, len(tokens) - size + 1))}
+
+
+def content_similarity(transcript: str, article_text: str) -> float:
+    """Measure whether a noisy ASR excerpt occurs in an article's body."""
+    heard = _content_tokens(transcript)
+    article = _content_tokens(article_text)
+    if len(heard) < 8 or len(article) < 20:
+        return 0.0
+    heard_bigrams, article_bigrams = _ngrams(heard, 2), _ngrams(article, 2)
+    heard_trigrams, article_trigrams = _ngrams(heard, 3), _ngrams(article, 3)
+    bigram_precision = len(heard_bigrams & article_bigrams) / max(1, len(heard_bigrams))
+    trigram_precision = len(heard_trigrams & article_trigrams) / max(1, len(heard_trigrams))
+    heard_keywords = {token for token in heard if token not in _CONTENT_STOPWORDS and len(token) > 2}
+    article_keywords = set(article)
+    keyword_coverage = len(heard_keywords & article_keywords) / max(1, len(heard_keywords))
+
+    # ASR commonly corrupts an isolated word. Bigrams and keyword coverage keep
+    # the signal useful while trigrams provide strong evidence for verbatim narration.
+    score = max(
+        trigram_precision,
+        bigram_precision * 0.72 + keyword_coverage * 0.28,
+        trigram_precision * 0.7 + bigram_precision * 0.2 + keyword_coverage * 0.1,
+    )
+    return max(0.0, min(1.0, round(score, 4)))
+
+
+def media_sections(media: list[dict[str, Any]]) -> dict[str, str]:
+    """Return media id -> canonical section, preserving inherited track sections."""
+    result: dict[str, str] = {}
+    previous_section = ""
+    ordered = sorted(
+        media,
+        key=lambda item: (
+            _track_number(item.get("title") or item.get("original_name")),
+            str(item.get("title") or "").lower(),
+        ),
+    )
+    for item in ordered:
+        section, _label, _inferred = _media_parts(item, previous_section)
+        if section:
+            previous_section = section
+        result[str(item.get("id"))] = _canonical_section(section)
+    return result
+
+
+def content_verification_media_ids(preview: dict[str, Any]) -> list[str]:
+    """Select only media in sections that metadata matching could not settle."""
+    unmatched_sections = {
+        _canonical_section(item.get("section") or "")
+        for item in preview.get("candidates", [])
+        if item.get("status") == "unmatched" and not item.get("confirmed")
+    }
+    options = preview.get("media_options", [])
+    sections = media_sections(options)
+    selected_ids = {
+        str(item.get("media_id"))
+        for item in preview.get("candidates", [])
+        if item.get("media_id")
+        and not item.get("confirmed")
+        and (
+            item.get("status") == "review"
+            or float(item.get("metadata_title_score") or 0) < 0.35
+        )
+    }
+    selected = []
+    for item in options:
+        media_id = str(item.get("id"))
+        if media_id in selected_ids or sections.get(media_id) in unmatched_sections:
+            selected.append(media_id)
+    # Keep bounded: sampling is a paid/remote ASR operation when not cached.
+    return selected[:30]
+
+
+def apply_content_transcripts(
+    preview: dict[str, Any],
+    source: dict[str, Any],
+    transcripts: dict[str, str],
+) -> dict[str, Any]:
+    """Refine a metadata preview with cached/sample ASR body evidence."""
+    candidates = preview.get("candidates", [])
+    options = preview.get("media_options", [])
+    option_by_id = {str(item.get("id")): item for item in options}
+    section_by_media = media_sections(options)
+    candidate_by_article = {str(item.get("article_id")): item for item in candidates}
+    articles = {str(item.get("id")): item for item in source.get("articles", [])}
+    confirmed_articles = {
+        article_id for article_id, item in candidate_by_article.items() if item.get("confirmed")
+    }
+    confirmed_media = {
+        str(item.get("media_id")) for item in candidates if item.get("confirmed") and item.get("media_id")
+    }
+
+    pair_scores: list[tuple[float, float, str, str]] = []
+    for media_id, transcript in transcripts.items():
+        media_id = str(media_id)
+        if media_id in confirmed_media or media_id not in option_by_id:
+            continue
+        media_section = section_by_media.get(media_id, "")
+        ranked: list[tuple[float, str]] = []
+        for article_id, article in articles.items():
+            if article_id in confirmed_articles:
+                continue
+            article_section = _canonical_section(article.get("section") or "")
+            if media_section and article_section != media_section:
+                continue
+            body = "\n".join(article.get("cleaned_paragraphs") or article.get("paragraphs") or [])
+            score = content_similarity(transcript, body)
+            if score > 0:
+                ranked.append((score, article_id))
+        ranked.sort(reverse=True)
+        for rank, (score, article_id) in enumerate(ranked):
+            second = ranked[1][0] if len(ranked) > 1 else 0.0
+            margin = score - second if rank == 0 else 0.0
+            pair_scores.append((score, margin, article_id, media_id))
+
+    assigned_articles = set(confirmed_articles)
+    assigned_media = set(confirmed_media)
+    accepted: list[tuple[float, float, str, str]] = []
+    for score, margin, article_id, media_id in sorted(pair_scores, reverse=True):
+        if article_id in assigned_articles or media_id in assigned_media:
+            continue
+        if score < 0.14 or (margin < 0.025 and score < 0.45):
+            continue
+        assigned_articles.add(article_id)
+        assigned_media.add(media_id)
+        accepted.append((score, margin, article_id, media_id))
+
+    accepted_media = {media_id for _score, _margin, _article, media_id in accepted}
+    for candidate in candidates:
+        if candidate.get("confirmed"):
+            continue
+        if str(candidate.get("media_id") or "") in accepted_media:
+            candidate.update({
+                "media_id": None,
+                "media_title": None,
+                "confidence": 0.0,
+                "match_method": "unmatched",
+                "status": "unmatched",
+                "reason": "正文核验后，该音频与另一篇文章更吻合。",
+            })
+
+    for score, margin, article_id, media_id in accepted:
+        candidate = candidate_by_article.get(article_id)
+        media_item = option_by_id[media_id]
+        if not candidate:
+            continue
+        if score >= 0.55:
+            confidence = 0.97
+        elif score >= 0.35:
+            confidence = 0.92
+        elif score >= 0.22:
+            confidence = 0.86
+        else:
+            confidence = 0.79
+        candidate.update({
+            "media_id": media_id,
+            "media_title": media_item.get("title"),
+            "confidence": confidence,
+            "match_method": "content",
+            "status": "matched" if confidence >= 0.82 else "review",
+            "confirmed": False,
+            "content_score": round(score, 3),
+            "reason": (
+                f"音频抽样正文与文章匹配（内容 {round(score * 100)}%，"
+                f"领先下一候选 {round(max(0.0, margin) * 100)}%）"
+            ),
+        })
+
+    preview["summary"] = {
+        "articles": len(candidates),
+        "audio": len(options),
+        "matched": sum(item.get("status") in {"matched", "confirmed"} for item in candidates),
+        "review": sum(item.get("status") == "review" for item in candidates),
+        "unmatched": sum(not item.get("media_id") for item in candidates),
+        "confirmed": sum(bool(item.get("confirmed")) for item in candidates),
+        "content_verified": len(accepted),
+    }
+    return preview
 
 
 def _preview(source_id: str, collection_id: str) -> dict[str, Any]:
@@ -337,7 +532,11 @@ def _preview(source_id: str, collection_id: str) -> dict[str, Any]:
                 "media_id": stored["media_id"], "media_title": stored["media_title"],
                 "confidence": float(stored["confidence"]), "match_method": stored["match_method"],
                 "status": "confirmed", "confirmed": bool(stored["confirmed"]),
-                "reason": "已保存的人工确认关系" if stored["match_method"] == "manual" else "已确认的自动匹配关系",
+                "reason": (
+                    "已保存的人工确认关系" if stored["match_method"] == "manual"
+                    else "已确认的正文核验关系" if stored["match_method"] == "content"
+                    else "已确认的自动匹配关系"
+                ),
             })
 
     # Saved/manual relationships win. Remove duplicate automatic suggestions so
@@ -375,6 +574,11 @@ def _preview(source_id: str, collection_id: str) -> dict[str, Any]:
 def preview_content_pairing(source_id: str, collection_id: str) -> dict[str, Any]:
     """Public service entry point used by the unified issue importer."""
     return _preview(source_id, collection_id)
+
+
+def content_matching_source(source_id: str) -> dict[str, Any]:
+    """Return the full article source for the content-verification pipeline."""
+    return _source(source_id)
 
 
 @router.get("/options")
@@ -461,7 +665,7 @@ def confirm_pairing(spec: PairConfirmRequest, request: Request) -> dict[str, Any
             )
         connection.execute("DELETE FROM article_media_links WHERE article_source_id = ?", (spec.source_id,))
         for item in spec.links:
-            method = "manual" if item.match_method == "manual" else "automatic"
+            method = item.match_method if item.match_method in {"manual", "content"} else "automatic"
             connection.execute(
                 """INSERT INTO article_media_links(article_id, article_source_id, media_id, match_method,
                           confidence, confirmed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",

@@ -103,10 +103,11 @@ main { max-width:1500px; margin:auto; }
 .dialog-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:20px; }
 .pair-dialog { width:min(1180px,calc(100vw - 32px)); max-width:none; }
 .pair-card { width:100%; max-width:none; }
-.pair-selectors { display:grid; grid-template-columns:minmax(220px,1fr) minmax(260px,1fr) auto; align-items:end; gap:12px; margin:20px 0; }
+.pair-selectors { display:grid; grid-template-columns:minmax(220px,1fr) minmax(260px,1fr) auto auto; align-items:end; gap:12px; margin:20px 0; }
 .pair-selectors label { display:grid; gap:6px; color:var(--muted); font-size:12px; }
 .pair-selectors select { width:100%; }
 .pair-selectors .primary { min-height:var(--h-md); padding:0 18px; border:1px solid var(--accent); border-radius:var(--radius-sm); background:var(--accent); color:var(--on-accent); }
+.pair-selectors .content-check { min-height:var(--h-md); padding:0 16px; border:1px solid var(--accent); border-radius:var(--radius-sm); background:var(--accent-soft); color:var(--accent-ink); font-weight:600; }
 .pair-summary { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; margin-bottom:16px; }
 .pair-summary>div { padding:12px; border:1px solid var(--line); border-radius:var(--radius); background:var(--bg); }
 .pair-summary b,.pair-summary span { display:block; }

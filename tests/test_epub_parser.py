@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import zipfile
 
-from app import EPUB_PARSER_VERSION, _migrate_library_inplace, extract_epub_articles
+from app import EPUB_PARSER_VERSION, _content_sample_windows, _migrate_library_inplace, extract_epub_articles
 
 
 def test_epub3_spine_order_sections_and_short_articles(tmp_path):
@@ -54,3 +54,12 @@ def test_epub3_spine_order_sections_and_short_articles(tmp_path):
     assert stale["parser_version"] == EPUB_PARSER_VERSION
     assert [article["section"] for article in stale["articles"]] == ["Science", "Science"]
     assert stale["articles"][0]["favorite"] is True
+
+
+def test_content_sample_windows_cover_multiple_parts_of_long_audio():
+    windows = _content_sample_windows(6 * 60 * 1000)
+    assert len(windows) == 3
+    assert windows[0][0] == 12.0
+    assert windows[0][1] == 28.0
+    assert windows[1][0] > windows[0][0] + windows[0][1]
+    assert windows[2][0] > windows[1][0] + windows[1][1]
