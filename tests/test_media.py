@@ -14,6 +14,26 @@ def test_dedicated_asr_key_overrides_qwen_text_gateway(monkeypatch):
     assert application.qwen_asr_config()['api_key'] == 'dedicated-asr-key'
 
 
+def test_original_audio_alignment_fills_unmatched_sentence_ranges():
+    import app as application
+    sentences = [
+        {'index': 0, 'para': 0, 'text': 'The first complete sentence is here.'},
+        {'index': 1, 'para': 0, 'text': 'The middle sentence needs an estimated range.'},
+        {'index': 2, 'para': 0, 'text': 'The final complete sentence is here.'},
+    ]
+    raw = [
+        {**sentences[0], 'begin_ms': 0, 'end_ms': 1000},
+        {**sentences[2], 'begin_ms': 3000, 'end_ms': 4000},
+    ]
+    result = application._fill_original_alignment_gaps(sentences, raw, 4000)
+    assert len(result) == 3
+    assert result[0]['estimated'] is False
+    assert result[1]['estimated'] is True
+    assert result[1]['begin_ms'] == 1000
+    assert result[1]['end_ms'] == 3000
+    assert result[2]['estimated'] is False
+
+
 def wav_bytes(seconds: float = 0.12) -> bytes:
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as output:

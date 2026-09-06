@@ -2935,6 +2935,19 @@ def _cached_original_audio_payload(ctx: dict[str, Any]) -> dict[str, Any] | None
     }
 
 
+def _valid_alignment(item: dict[str, Any]) -> bool:
+    """Return whether an ASR match contains a usable forward time range."""
+    begin = item.get("begin_ms")
+    end = item.get("end_ms")
+    return (
+        isinstance(begin, (int, float))
+        and not isinstance(begin, bool)
+        and isinstance(end, (int, float))
+        and not isinstance(end, bool)
+        and end > begin
+    )
+
+
 def _fill_original_alignment_gaps(
     items: list[dict[str, Any]], alignments: list[dict[str, Any]], total_ms: int
 ) -> list[dict[str, Any]]:
