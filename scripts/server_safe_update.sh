@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # 一键更新：校验 → 停服完整备份 → 更新依赖 → 启动和健康检查。
 set -euo pipefail
-umask 077
+# Public code/dependencies must remain readable by the systemd service user.
+# The backup subprocess alone uses the private umask.
+umask 022
 APP_DIR="${ENGLISH_LAB_APP_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 export ENGLISH_LAB_APP_DIR="$APP_DIR"
 SERVICE_NAME="${SERVICE_NAME:-ai-english-lab}"
@@ -15,7 +17,9 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
 fi
 OLD_HEAD=$(git rev-parse HEAD)
 WAS_ACTIVE=0
-systemctl is-active --quiet "$SERVICE_NAME" && WAS_ACTIVE=1
+case "$(systemctl show "$SERVICE_NAME" -p ActiveState --value)" in
+  active|activating|reloading|failed) WAS_ACTIVE=1 ;;
+esac
 STOPPED=0
 CHANGED=0
 rollback() {
@@ -25,9 +29,11 @@ rollback() {
     echo '更新失败，正在恢复旧代码；数据目录和备份保持原样。' >&2
     if [ "$CHANGED" = 1 ]; then
       git checkout --detach "$OLD_HEAD" || true
+      "$PYTHON_BIN" "$HELPERS/repair_code_permissions.py" || true
       "$APP_DIR/.venv/bin/python" -m pip install -r requirements.txt --quiet || true
     fi
     if [ "$STOPPED" = 1 ] && [ "$WAS_ACTIVE" = 1 ]; then
+      $SUDO systemctl reset-failed "$SERVICE_NAME" || true
       $SUDO systemctl restart "$SERVICE_NAME" || true
       echo "旧版本已尝试启动，请检查 systemctl status $SERVICE_NAME。" >&2
     fi
@@ -42,13 +48,17 @@ HELPERS=$(mktemp -d)
 # Read the new backup helper before changing the checkout (also supports upgrades from old versions).
 git show "origin/$BRANCH:scripts/storage_config.py" > "$HELPERS/storage_config.py"
 git show "origin/$BRANCH:scripts/backup_data.py" > "$HELPERS/backup_data.py"
+git show "origin/$BRANCH:scripts/repair_code_permissions.py" > "$HELPERS/repair_code_permissions.py"
+# Also repairs the previous checkout when recovering from the broken updater.
+"$PYTHON_BIN" "$HELPERS/repair_code_permissions.py"
 echo '正在停止服务并备份文章、数据库、音频、导入文件和配置。大音频库需要更长时间。'
 $SUDO systemctl stop "$SERVICE_NAME"
 STOPPED=1
-"$PYTHON_BIN" "$HELPERS/backup_data.py"
+(umask 077; "$PYTHON_BIN" "$HELPERS/backup_data.py")
 CHANGED=1
 git checkout "$BRANCH"
 git merge --ff-only "origin/$BRANCH"
+"$PYTHON_BIN" "$HELPERS/repair_code_permissions.py"
 if [ ! -d .venv ]; then "$PYTHON_BIN" -m venv .venv; fi
 .venv/bin/python -m pip install -r requirements.txt --quiet
 .venv/bin/python -B -c "import ast,pathlib; [ast.parse(p.read_text(encoding='utf-8-sig')) for p in [pathlib.Path('app.py'),*pathlib.Path('english_lab').glob('*.py')]]"
@@ -56,13 +66,22 @@ if [ ! -d .venv ]; then "$PYTHON_BIN" -m venv .venv; fi
 export ENGLISH_LAB_DATA_DIR="$("$PYTHON_BIN" scripts/storage_config.py ENGLISH_LAB_DATA_DIR)"
 export MEDIA_STORAGE_ROOT="$("$PYTHON_BIN" scripts/storage_config.py MEDIA_STORAGE_ROOT)"
 export MEDIA_IMPORT_ROOT="$("$PYTHON_BIN" scripts/storage_config.py MEDIA_IMPORT_ROOT)"
-.venv/bin/python -B -c 'import app; assert app.app'
+SERVICE_USER=$(systemctl show "$SERVICE_NAME" -p User --value)
+SERVICE_USER="${SERVICE_USER:-root}"
+if [ "$(id -un)" = "$SERVICE_USER" ]; then
+  .venv/bin/python -B -c 'import app; assert app.app'
+elif [ "$(id -u)" -eq 0 ]; then
+  runuser -u "$SERVICE_USER" -- env ENGLISH_LAB_DATA_DIR="$ENGLISH_LAB_DATA_DIR" MEDIA_STORAGE_ROOT="$MEDIA_STORAGE_ROOT" MEDIA_IMPORT_ROOT="$MEDIA_IMPORT_ROOT" "$APP_DIR/.venv/bin/python" -B -c 'import app; assert app.app'
+else
+  sudo -u "$SERVICE_USER" env ENGLISH_LAB_DATA_DIR="$ENGLISH_LAB_DATA_DIR" MEDIA_STORAGE_ROOT="$MEDIA_STORAGE_ROOT" MEDIA_IMPORT_ROOT="$MEDIA_IMPORT_ROOT" "$APP_DIR/.venv/bin/python" -B -c 'import app; assert app.app'
+fi
 if command -v node >/dev/null 2>&1; then
   for file in static/app.js static/auth.js static/login.js static/media.js static/service-worker.js; do node --check "$file"; done
 fi
+$SUDO systemctl reset-failed "$SERVICE_NAME" || true
 $SUDO systemctl restart "$SERVICE_NAME"
 for attempt in $(seq 1 30); do
-  if curl -fsS "http://127.0.0.1:${PORT}/health/ready" >/dev/null; then
+  if curl -fsS "http://127.0.0.1:${PORT}/health/ready" >/dev/null 2>&1; then
     STOPPED=0
     echo '更新完成，已有文章、音频及学习记录已保留。'
     exit 0
@@ -70,4 +89,5 @@ for attempt in $(seq 1 30); do
   sleep 1
 done
 echo '健康检查失败。' >&2
+$SUDO journalctl -u "$SERVICE_NAME" -n 60 --no-pager >&2 || true
 exit 1
