@@ -1,118 +1,27 @@
-# Linux 公网部署与运维
+# 部署与恢复
 
-主 README 中的一键安装脚本已经包含依赖、运行用户、数据目录、systemd、Caddy HTTPS 和健康检查配置。正常部署不需要手工复制本目录中的 Caddyfile。
+安装、更新与本地发布命令见 [项目 README](../README.md)。所有发布入口统一使用 `scripts/server_safe_update.sh`。
 
-## 一键部署
+## 更新前
 
-仓库已经公开，不需要 GitHub 登录。先把域名解析到服务器并开放 TCP 80/443，然后运行一条命令。
+保留当前 `.env`、数据与音频目录。旧版默认目录和外置音频目录会被继续使用；不要把 `.env` 替换成示例文件。服务器代码如有本地修改需先提交或手工处理，脚本不会强制覆盖。
 
-root 用户：
+备份时服务暂停，完整备份包括大音频文件。磁盘应有足够空间；可将 `BACKUP_DIR` 设到另一块磁盘，但不要位于任何待备份目录内部。完整备份不自动清理。
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/guai6mmt/ai-english-intensive-reading-lab/main/install.sh | bash -s -- english.example.com
-```
+## 恢复备份
 
-普通 sudo 用户：
+1. 停止 `ai-english-lab` 服务。
+2. 在独立空目录解开 `backups/full-*.tar.gz`，先查看 `manifest.json`。
+3. 按 `archive_roots` 把各 `store-N/` 的内容恢复到相应原始绝对目录；不要把 `store-N` 当成新的数据目录名。嵌套目录已包含在其父目录备份内。
+4. 把 `config/.env` 恢复到项目目录，核对实际数据路径。保留数据目录中的 `.settings.key`，否则原加密 AI 密钥无法读取。
+5. 恢复相应服务用户的目录访问权限，启动服务并检查 `/health/ready` 与文章、音频和句子本。
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/guai6mmt/ai-english-intensive-reading-lab/main/install.sh | sudo bash -s -- english.example.com
-```
+恢复前保留当前目录副本，尤其是备份之后新导入的文章或复习记录。更新脚本的失败回退只恢复代码/依赖并尝试启动旧服务，不自动以旧备份覆盖新数据。
 
-首次安装和以后更新都可以使用这条命令。脚本自动下载到 `/opt/ai-english-intensive-reading-lab`；如果发现同名非 Git 目录，会先移动为带时间戳的备份，不会直接删除。
+## 非标准部署
 
-脚本会生成以下部署结构：
+脚本按 `.env` 和环境变量读取目录，服务名默认为 `ai-english-lab`、健康检查端口默认为 `8010`。如果曾通过自定义 systemd 覆盖配置运行，需先确保 `.env` 中三项数据路径与服务实际路径一致，再使用脚本。Docker 或其他进程管理器不适用此 systemd 更新流程。
 
-```text
-/srv/english-lab/
-├── data/       # SQLite 数据库与应用数据
-├── media/      # 受管理的音频文件
-└── import/     # 允许后台扫描的导入目录
+## 验证范围
 
-/etc/systemd/system/ai-english-lab.service
-/etc/caddy/Caddyfile.d/ai-english-lab.caddy
-```
-
-应用只监听 `127.0.0.1:8010`。Caddy 对外监听 80/443、自动申请证书，并把请求反向代理给应用。
-
-`Caddyfile.example` 仅用于阅读和自定义参考；一键安装会自动生成等价配置。
-
-## 更新
-
-```bash
-bash scripts/server_safe_update.sh
-```
-
-更新流程包括：
-
-1. 检查当前服务状态；
-2. 在线备份 SQLite 数据库和小型应用数据；
-3. 从 `origin/main` 执行 fast-forward 更新；
-4. 安装或更新 Python 依赖；
-5. 进行 Python 和 JavaScript 校验；
-6. 受控重启并等待健康检查通过。
-
-备份默认存放在项目的 `backups/`，仅保留最近 5 份。媒体文件不会打包进更新备份，应单独做增量或异地备份。
-
-## 权限和网络
-
-- systemd 服务使用执行安装命令的普通用户运行；如果直接使用 root 安装，则自动创建 `englishlab` 系统用户。
-- 数据、媒体和导入目录权限默认为 `750`。
-- `.env` 权限设置为 `600`。
-- 公网只应开放 SSH、TCP 80 和 TCP 443，不要直接开放应用端口 8010。
-- 媒体目录需要服务用户读写，导入目录需要服务用户读取。
-
-## 高级基础设施配置
-
-正常部署不需要阅读本节。AI、TTS、ASR、OSS 和阅读偏好全部在网页设置中完成。只有需要更换磁盘、端口或服务用户时，才需要在项目目录用环境变量重新运行底层安装器：
-
-```bash
-env \
-  DOMAIN=english.example.com \
-  PORT=8020 \
-  APP_USER=englishlab \
-  ENGLISH_LAB_DATA_DIR=/mnt/english-lab/data \
-  MEDIA_STORAGE_ROOT=/mnt/english-lab/media \
-  MEDIA_IMPORT_ROOT=/mnt/english-lab/import \
-  bash scripts/server_install_or_update.sh
-```
-
-普通用户在 `env` 前添加 `sudo`。
-
-已有 `.env` 不会被删除，脚本只自动更新数据目录、媒体目录、导入目录、API 文档开关和 Cookie 安全设置。网页中保存的 AI 服务配置会被保留。
-
-## 检查与排错
-
-以下命令按 root 用户编写；普通用户需要在命令开头添加 `sudo`。
-
-```bash
-# 应用状态
-systemctl status ai-english-lab
-
-# 应用日志
-journalctl -u ai-english-lab -f
-
-# Caddy 状态和证书日志
-systemctl status caddy
-journalctl -u caddy -f
-
-# 本机健康检查
-curl -fsS http://127.0.0.1:8010/health/ready
-
-# 验证 Caddy 配置
-caddy validate --config /etc/caddy/Caddyfile
-```
-
-如果证书申请失败，优先检查域名解析、云服务器安全组、主机防火墙以及 80/443 端口占用情况。
-
-## 恢复数据库
-
-停止服务后，将目标备份复制回实际数据目录：
-
-```bash
-systemctl stop ai-english-lab
-cp backups/app-YYYYMMDD-HHMMSS.db /srv/english-lab/data/app.db
-chown --reference=/srv/english-lab/data /srv/english-lab/data/app.db
-systemctl start ai-english-lab
-```
-
-以上恢复命令按 root 用户编写，普通用户需要添加 `sudo`。恢复前建议先复制一份当前数据库。不要在服务运行时直接覆盖 SQLite 文件。
+仓库有目录保留和完整备份自动测试，并对 shell 脚本做语法检查。真实服务器的网络、权限、磁盘空间和 systemd 重启需在实际部署时验证；仅推送 GitHub 不会自动修改服务器。

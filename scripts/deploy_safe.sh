@@ -29,17 +29,23 @@ PORT="${PORT:-8010}"
 
 cd "$(dirname "$0")/.."
 
+if [ "$(git branch --show-current)" != "$BRANCH" ]; then
+  echo "请先切换到要发布的分支 $BRANCH。" >&2
+  exit 1
+fi
+
 echo "==> 本地校验"
-python -B -c "import ast, pathlib; [ast.parse(pathlib.Path(p).read_text(encoding='utf-8')) for p in ['app.py','V6_english_analyzer.py']]"
+python -B -c "import ast, pathlib; [ast.parse(pathlib.Path(p).read_text(encoding='utf-8')) for p in ['app.py',*[str(p) for p in pathlib.Path('english_lab').glob('*.py')]]]"
 if command -v node >/dev/null 2>&1; then
   node --check static/app.js
 else
   echo "    （未检测到 node，跳过 static/app.js 语法检查）"
 fi
 
-if ! git diff --quiet || ! git diff --cached --quiet; then
+if [ -n "$(git status --porcelain)" ]; then
   echo "==> 提交本地改动"
-  git add .gitignore .env.example README.md requirements.txt app.py V6_english_analyzer.py scripts static
+  git add -u
+  git add english_lab scripts static tests README.md deploy
   git commit -m "$MESSAGE"
 else
   echo "==> 工作区干净，无需新建提交"
@@ -59,7 +65,8 @@ ssh "$SERVER" "set -e
     PORT='${PORT}' bash scripts/server_install_or_update.sh
   else
     cd '${REMOTE_DIR}'
-    PORT='${PORT}' BRANCH='${BRANCH}' bash scripts/server_safe_update.sh
+    git fetch origin '${BRANCH}'
+    git show 'origin/${BRANCH}:scripts/server_safe_update.sh' | ENGLISH_LAB_APP_DIR='${REMOTE_DIR}' PORT='${PORT}' BRANCH='${BRANCH}' bash
   fi
 "
 

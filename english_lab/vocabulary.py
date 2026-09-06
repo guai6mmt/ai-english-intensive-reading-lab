@@ -61,7 +61,7 @@ LOCAL_GLOSSARY: dict[str, tuple[str, str, str]] = {
 class VocabularyCreate(BaseModel):
     article_id: str | None = Field(default=None, max_length=200)
     sentence_id: str = Field(default="", max_length=200)
-    term: str = Field(min_length=1, max_length=200)
+    term: str = Field(min_length=1, max_length=10000)
     lemma: str = Field(default="", max_length=200)
     phonetic: str = Field(default="", max_length=200)
     part_of_speech: str = Field(default="", max_length=100)
@@ -194,7 +194,7 @@ def _migrate_legacy(user_id: str) -> None:
 
 
 def add_entry(user_id: str, spec: VocabularyCreate, *, count_encounter: bool = True) -> dict[str, Any]:
-    normalized = normalize_term(spec.term)
+    normalized = ("sentence:" + re.sub(r"\s+", " ", spec.term).strip().casefold()) if spec.kind == "sentence" else normalize_term(spec.term)
     if not normalized:
         raise HTTPException(400, "没有识别到可保存的英文单词或短语。")
     lemma = normalize_term(spec.lemma) or infer_lemma(normalized)
@@ -385,12 +385,16 @@ def list_vocabulary(
     query: str = "",
     mastery: str = "",
     due: bool = False,
+    kind: str = "",
     limit: int = Query(default=500, ge=1, le=2000),
 ) -> dict[str, Any]:
     user = current_user(request)
     _migrate_legacy(user["id"])
     clauses = ["user_id = ?"]
     params: list[Any] = [user["id"]]
+    if kind:
+        clauses.append("kind = ?")
+        params.append(kind)
     if query.strip():
         clauses.append("(normalized_term LIKE ? OR translation LIKE ? OR definition LIKE ?)")
         needle = f"%{query.strip().lower()}%"

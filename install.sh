@@ -33,8 +33,8 @@ if [ -d "$APP_DIR/.git" ]; then
   git config --global --add safe.directory "$APP_DIR" >/dev/null 2>&1 || true
   git -C "$APP_DIR" remote set-url origin "$REPOSITORY_URL"
   git -C "$APP_DIR" fetch origin main
-  git -C "$APP_DIR" checkout main
-  git -C "$APP_DIR" pull --ff-only origin main
+  git -C "$APP_DIR" show origin/main:scripts/server_safe_update.sh | ENGLISH_LAB_APP_DIR="$APP_DIR" bash
+  exit $?
 elif [ -e "$APP_DIR" ]; then
   BACKUP_DIR="${APP_DIR}.backup-$(date +%Y%m%d-%H%M%S)"
   echo "==> 现有目录不是 Git 仓库，保留为备份：${BACKUP_DIR}"

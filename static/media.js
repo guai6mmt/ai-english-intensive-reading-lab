@@ -139,7 +139,7 @@ function renderItems() {
     return `<article class="media-row" data-id="${esc(item.id)}" data-playing="${state.current?.id === item.id && !audio.paused}">
       <button class="track-icon" data-play="${esc(item.id)}" aria-label="播放">${state.current?.id === item.id && !audio.paused ? ICONS.pause : ICONS.play}</button>
       <div class="track-main" data-play="${esc(item.id)}"><strong>${esc(item.title)}</strong><small>${esc(item.collection_name || item.relative_path || item.original_name)}${progress ? ` · 已听 ${progress}%` : ""}</small></div>
-      <div class="track-tags">${item.linked_article_id ? `<a class="linked-article" href="/?article=${encodeURIComponent(item.linked_article_id)}">配套文章</a>` : ""}${item.difficulty ? `<span>${esc(item.difficulty)}</span>` : ""}${tags}</div>
+      <div class="track-tags">${item.linked_article_id ? `<a class="linked-article" href="/#article/${encodeURIComponent(item.linked_article_id)}">配套文章</a>` : ""}${item.difficulty ? `<span>${esc(item.difficulty)}</span>` : ""}${tags}</div>
       <div class="track-meta">${duration} · ${formatBytes(item.file_size)}</div>
       <div class="row-actions">
         <button data-favorite="${esc(item.id)}" title="收藏" aria-label="收藏音频" class="${item.favorite ? "is-favorite" : ""}">${ICONS.star}</button>

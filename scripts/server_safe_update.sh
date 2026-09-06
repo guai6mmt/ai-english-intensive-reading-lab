@@ -1,110 +1,73 @@
 #!/usr/bin/env bash
-# 服务器端安全增量更新：拉取新代码 → 语法校验 → 备份 → 受控重启 → 健康检查
-# 用法（在服务器上执行）：
-#   bash scripts/server_safe_update.sh
-# 可选环境变量：
-#   PORT          监听端口（默认 8010）
-#   SERVICE_NAME  systemd 服务名（默认 ai-english-lab）
-#   BRANCH        要拉取的分支（默认 main）
-#   PYTHON_BIN    Python 可执行文件（默认 python3）
-#   SKIP_BACKUP   设为 1 时跳过 data 备份
+# 一键更新：校验 → 停服完整备份 → 更新依赖 → 启动和健康检查。
 set -euo pipefail
-
-APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PORT="${PORT:-8010}"
+umask 077
+APP_DIR="${ENGLISH_LAB_APP_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+export ENGLISH_LAB_APP_DIR="$APP_DIR"
 SERVICE_NAME="${SERVICE_NAME:-ai-english-lab}"
 BRANCH="${BRANCH:-main}"
+PORT="${PORT:-8010}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-SKIP_BACKUP="${SKIP_BACKUP:-0}"
-
-if [ "$(id -u)" -eq 0 ]; then
-  SUDO=""
-else
-  SUDO="sudo"
-fi
-
 cd "$APP_DIR"
-
-# 只读取所需键，不直接 source .env（API Key 或中文占位内容可能含空格）。
-CONFIGURED_DATA_DIR=""
-if [ -f ".env" ]; then
-  CONFIGURED_DATA_DIR="$(sed -n 's/^ENGLISH_LAB_DATA_DIR=//p' .env | tail -n 1)"
+if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  echo '代码目录有未提交修改，请先提交；更新不会覆盖本地改动。' >&2; exit 1
 fi
-DATA_DIR="${ENGLISH_LAB_DATA_DIR:-${CONFIGURED_DATA_DIR:-${APP_DIR}/data}}"
-BACKUP_DIR="${APP_DIR}/backups"
-
-echo "==> 1/6 当前服务状态"
-if systemctl is-active --quiet "$SERVICE_NAME"; then
-  echo "    服务正在运行：$SERVICE_NAME"
-else
-  echo "    服务未运行（首次部署？将照常更新）"
-fi
-
-# 备份 data 目录（小项目数据量不大，几秒就能完成；用户数据是最重要的）
-if [ "$SKIP_BACKUP" != "1" ] && [ -d "$DATA_DIR" ]; then
-  STAMP=$(date +%Y%m%d-%H%M%S)
-  mkdir -p "$BACKUP_DIR"
-  BACKUP_FILE="${BACKUP_DIR}/data-backup-${STAMP}.tar.gz"
-  if [ -f "${DATA_DIR}/app.db" ] && command -v sqlite3 >/dev/null 2>&1; then
-    sqlite3 "${DATA_DIR}/app.db" ".backup '${BACKUP_DIR}/app-${STAMP}.db'"
+OLD_HEAD=$(git rev-parse HEAD)
+WAS_ACTIVE=0
+systemctl is-active --quiet "$SERVICE_NAME" && WAS_ACTIVE=1
+STOPPED=0
+CHANGED=0
+rollback() {
+  code=$?
+  trap - EXIT
+  if [ "$code" -ne 0 ]; then
+    echo '更新失败，正在恢复旧代码；数据目录和备份保持原样。' >&2
+    if [ "$CHANGED" = 1 ]; then
+      git checkout --detach "$OLD_HEAD" || true
+      "$APP_DIR/.venv/bin/python" -m pip install -r requirements.txt --quiet || true
+    fi
+    if [ "$STOPPED" = 1 ] && [ "$WAS_ACTIVE" = 1 ]; then
+      $SUDO systemctl restart "$SERVICE_NAME" || true
+      echo "旧版本已尝试启动，请检查 systemctl status $SERVICE_NAME。" >&2
+    fi
   fi
-  echo "==> 2/6 备份数据库与应用数据 → ${BACKUP_FILE}"
-  tar --exclude='media' --exclude='app.db' --exclude='app.db-wal' --exclude='app.db-shm' -czf "${BACKUP_FILE}" -C "$DATA_DIR" .
-  # 仅保留最近 5 份备份
-  ls -1t backups/data-backup-*.tar.gz 2>/dev/null | tail -n +6 | xargs -r rm -f
-  ls -1t backups/app-*.db 2>/dev/null | tail -n +6 | xargs -r rm -f
-else
-  echo "==> 2/6 已跳过 data 备份"
-fi
-
-echo "==> 3/6 拉取最新代码（${BRANCH}）"
-# 保存本地未提交修改（如服务端编辑过 .env），避免冲突
+  exit "$code"
+}
+trap rollback EXIT
+# Fetch before downtime. No runtime paths or environment configuration are rewritten.
 git fetch origin "$BRANCH"
-LOCAL_HEAD=$(git rev-parse HEAD)
-REMOTE_HEAD=$(git rev-parse "origin/${BRANCH}")
-if [ "$LOCAL_HEAD" = "$REMOTE_HEAD" ]; then
-  echo "    远端无新提交，仍执行依赖检查与可能的服务重启"
-fi
+git merge-base --is-ancestor "$OLD_HEAD" "origin/$BRANCH" || { echo '本地分支与远端分叉，停止更新。' >&2; exit 1; }
+HELPERS=$(mktemp -d)
+# Read the new backup helper before changing the checkout (also supports upgrades from old versions).
+git show "origin/$BRANCH:scripts/storage_config.py" > "$HELPERS/storage_config.py"
+git show "origin/$BRANCH:scripts/backup_data.py" > "$HELPERS/backup_data.py"
+echo '正在停止服务并备份文章、数据库、音频、导入文件和配置。大音频库需要更长时间。'
+$SUDO systemctl stop "$SERVICE_NAME"
+STOPPED=1
+"$PYTHON_BIN" "$HELPERS/backup_data.py"
+CHANGED=1
 git checkout "$BRANCH"
-git pull --ff-only origin "$BRANCH"
-
-echo "==> 4/6 安装/更新依赖（不影响运行中的进程）"
-if [ ! -d ".venv" ]; then
-  "$PYTHON_BIN" -m venv .venv
-fi
-# shellcheck disable=SC1091
-source .venv/bin/activate
-python -m pip install --upgrade pip --quiet
-python -m pip install -r requirements.txt --quiet
-
-echo "==> 5/6 语法 / 导入校验（不重启服务）"
-python -B -c "import ast, pathlib; files=['app.py','V6_english_analyzer.py','video_render.py',*[str(p) for p in pathlib.Path('english_lab').glob('*.py')]]; [ast.parse(pathlib.Path(p).read_text(encoding='utf-8')) for p in files]"
-# 完整 import 测试，确保依赖齐全且模块结构未损坏
-python -B -c "import importlib, sys; sys.path.insert(0, '.'); m = importlib.import_module('app'); assert hasattr(m, 'app'), 'FastAPI app 对象未找到'"
+git merge --ff-only "origin/$BRANCH"
+if [ ! -d .venv ]; then "$PYTHON_BIN" -m venv .venv; fi
+.venv/bin/python -m pip install -r requirements.txt --quiet
+.venv/bin/python -B -c "import ast,pathlib; [ast.parse(p.read_text(encoding='utf-8-sig')) for p in [pathlib.Path('app.py'),*pathlib.Path('english_lab').glob('*.py')]]"
+# Import using the persistent paths, never the repository's default data directory.
+export ENGLISH_LAB_DATA_DIR="$("$PYTHON_BIN" scripts/storage_config.py ENGLISH_LAB_DATA_DIR)"
+export MEDIA_STORAGE_ROOT="$("$PYTHON_BIN" scripts/storage_config.py MEDIA_STORAGE_ROOT)"
+export MEDIA_IMPORT_ROOT="$("$PYTHON_BIN" scripts/storage_config.py MEDIA_IMPORT_ROOT)"
+.venv/bin/python -B -c 'import app; assert app.app'
 if command -v node >/dev/null 2>&1; then
-  node --check static/app.js
-  node --check static/listen.js
-  node --check static/auth.js
-  node --check static/login.js
-  node --check static/media.js
+  for file in static/app.js static/auth.js static/login.js static/media.js static/service-worker.js; do node --check "$file"; done
 fi
-
-echo "==> 6/6 受控重启 systemd 服务"
-$SUDO systemctl daemon-reload
 $SUDO systemctl restart "$SERVICE_NAME"
-
-# 等待端口重新可用并做健康检查（最多 20 秒）
-echo "    等待端口 ${PORT} 重新上线 ..."
-for i in $(seq 1 20); do
-  if curl -fsS "http://127.0.0.1:${PORT}/health/ready" >/dev/null 2>&1; then
-    echo "    ✓ 服务已重新上线（${i}s 内恢复）"
-    echo "Done. http://127.0.0.1:${PORT}"
+for attempt in $(seq 1 30); do
+  if curl -fsS "http://127.0.0.1:${PORT}/health/ready" >/dev/null; then
+    STOPPED=0
+    echo '更新完成，已有文章、音频及学习记录已保留。'
     exit 0
   fi
   sleep 1
 done
-
-echo "    ✗ 警告：20s 内端口仍未响应。请检查："
-echo "         ${SUDO:+sudo }systemctl status ${SERVICE_NAME}"
-echo "         journalctl -u ${SERVICE_NAME} -f"
+echo '健康检查失败。' >&2
 exit 1

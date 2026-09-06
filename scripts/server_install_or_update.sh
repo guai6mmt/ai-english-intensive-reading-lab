@@ -9,9 +9,7 @@ PORT="${PORT:-8010}"
 DOMAIN="${DOMAIN:-}"
 SERVICE_NAME="${SERVICE_NAME:-ai-english-lab}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-DATA_DIR="${ENGLISH_LAB_DATA_DIR:-/srv/english-lab/data}"
-MEDIA_DIR="${MEDIA_STORAGE_ROOT:-/srv/english-lab/media}"
-IMPORT_DIR="${MEDIA_IMPORT_ROOT:-/srv/english-lab/import}"
+
 
 if [ -n "${APP_USER:-}" ]; then
   APP_USER="$APP_USER"
@@ -77,6 +75,11 @@ if [ -n "$DOMAIN" ] && ! command -v caddy >/dev/null 2>&1; then
   $SUDO apt-get update
   $SUDO apt-get install -y caddy
 fi
+
+# Preserve configured directories and existing project-local data on reinstall.
+DATA_DIR="$("$PYTHON_BIN" "$APP_DIR/scripts/storage_config.py" ENGLISH_LAB_DATA_DIR --install)"
+MEDIA_DIR="$("$PYTHON_BIN" "$APP_DIR/scripts/storage_config.py" MEDIA_STORAGE_ROOT --install)"
+IMPORT_DIR="$("$PYTHON_BIN" "$APP_DIR/scripts/storage_config.py" MEDIA_IMPORT_ROOT --install)"
 
 echo "==> 2/7 创建 Python 环境并安装依赖"
 cd "$APP_DIR"
