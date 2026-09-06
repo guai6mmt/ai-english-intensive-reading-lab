@@ -25,7 +25,9 @@ def selection(spec: SentenceSelection) -> tuple[dict, str, str]:
     from app import find_article, article_text
     article = find_article(spec.article_id)
     sentence = re.sub(r"\s+", " ", spec.sentence).strip()
-    context = re.sub(r"\s+", " ", article_text(article, cleaned=False))
+    raw_context = re.sub(r"\s+", " ", article_text(article, cleaned=False))
+    clean_context = re.sub(r"\s+", " ", article_text(article, cleaned=True))
+    context = clean_context if sentence in clean_context else raw_context
     if not sentence or sentence not in context:
         raise HTTPException(400, "请选择本文中的句子。")
     return article, sentence, context

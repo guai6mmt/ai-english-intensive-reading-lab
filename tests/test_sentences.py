@@ -47,6 +47,14 @@ def test_failed_ai_is_not_a_translation(authenticated_client, monkeypatch):
     assert response.status_code == 503
 
 
+def test_cleaned_reader_sentence_is_accepted(monkeypatch):
+    from english_lab.sentences import SentenceSelection, selection
+    monkeypatch.setattr(application, 'find_article', lambda _article_id: {'id': 'article-1'})
+    monkeypatch.setattr(application, 'article_text', lambda _article, cleaned=True: 'A cleaned sentence is shown here.' if cleaned else 'A  cleaned sentence is shown here .')
+    _article, sentence, context = selection(SentenceSelection(article_id='article-1', sentence='A cleaned sentence is shown here.'))
+    assert sentence in context
+
+
 def test_retired_analysis_routes_are_removed():
     routes = {getattr(r, 'path', '') for r in application.app.routes}
     for suffix in ('pack', 'text-check', 'overview', 'paragraphs/analyze', 'long-sentences', 'vocabulary/analyze', 'reading/questions', 'sentence/analyze', 'listening/prepare'):

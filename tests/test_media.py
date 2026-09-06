@@ -4,6 +4,16 @@ import io
 import wave
 
 
+def test_dedicated_asr_key_overrides_qwen_text_gateway(monkeypatch):
+    import app as application
+    monkeypatch.setattr(application, 'load_settings', lambda: {
+        'qwen_api_key': 'text-gateway-key',
+        'qwen_base_url': 'https://text-gateway.example/v1',
+        'dashscope_api_key': 'dedicated-asr-key',
+    })
+    assert application.qwen_asr_config()['api_key'] == 'dedicated-asr-key'
+
+
 def wav_bytes(seconds: float = 0.12) -> bytes:
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as output:

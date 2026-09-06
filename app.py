@@ -577,7 +577,9 @@ def qwen_tts_config(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
         or QWEN_TTS_DEFAULTS["base_url"]
     )
     return {
-        "api_key": qwen["api_key"] or dashscope_key,
+        # A dedicated DashScope key should override a text-provider key that may
+        # belong to another OpenAI-compatible Qwen gateway.
+        "api_key": dashscope_key or qwen["api_key"],
         "api_key_env": f"{qwen['api_key_env']} / DASHSCOPE_API_KEY",
         "base_url": base_url,
         "model": (
@@ -608,7 +610,8 @@ def qwen_asr_config(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
         or (os.getenv("DASHSCOPE_API_KEY") or "").strip()
     )
     return {
-        "api_key": qwen["api_key"] or dashscope_key,
+        # Prefer the dedicated audio-service key when text uses another gateway.
+        "api_key": dashscope_key or qwen["api_key"],
         "api_key_env": f"{qwen['api_key_env']} / DASHSCOPE_API_KEY",
         "base_url": normalize_dashscope_api_url(
             (overrides.get("qwen_asr_base_url") or "").strip()
