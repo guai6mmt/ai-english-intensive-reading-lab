@@ -12,9 +12,9 @@
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
     <link rel="stylesheet" href="/static/tokens.css?v=20260826" />
     <link rel="stylesheet" href="/static/components.css?v=20260901b" />
-    <link rel="stylesheet" href="/static/media.css?v=20260901b" />
+    <link rel="stylesheet" href="/static/media.css?v=20260907-webdav" />
     <script src="/static/theme.js?v=20260826"></script>
-    <script src="/static/auth.js"></script>
+    <script src="/static/auth.js?v=20260907-webdav"></script>
   </head>
   <body>
     <div class="media-app">
@@ -32,6 +32,7 @@
           <button class="quiet" id="scanBtn">扫描服务器</button>
           <button class="quiet package-action" id="packagesBtn">导入包</button>
           <button class="quiet pair-action" id="pairBtn">内容配套</button>
+          <button class="quiet remote-action" id="externalAccessBtn">外部播放器</button>
           <button class="primary" id="importBtn">＋ 导入文件夹</button>
           <button class="avatar" id="mediaThemeBtn" title="切换主题" aria-label="切换主题"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg></button>
           <button class="avatar" id="userBtn" title="退出登录">管</button>
@@ -111,6 +112,32 @@
       </form>
     </dialog>
 
+    <dialog id="externalAccessDialog" class="remote-dialog">
+      <div class="dialog-card">
+        <div class="dialog-head"><div><p class="eyebrow">EXTERNAL PLAYER ACCESS</p><h2>在 foobar2000 中听</h2></div><button class="icon-close" id="closeExternalAccessBtn" aria-label="关闭外部播放器设置">×</button></div>
+        <p>用独立的只读账号连接音频库。不会暴露网站密码，也不允许外部播放器修改或删除音频。</p>
+        <div class="notice warn" id="remoteDisabled" hidden>外部播放器访问只在 HTTPS 部署中开放。请先通过服务器的 HTTPS 域名打开本页。</div>
+        <div id="remoteEnabled" hidden>
+          <section class="remote-overview">
+            <div><small>FOOBAR2000 服务器地址</small><code id="foobarDavUrl"></code><button class="quiet" type="button" data-copy-target="foobarDavUrl">复制地址</button></div>
+            <img id="davQr" alt="WebDAV 地址二维码" />
+          </section>
+          <section class="remote-tree" aria-label="外部播放器中的分类结构"><strong>连接后的分类</strong><code>English Lab<br>├─ 杂志<br>│&nbsp; └─ 期号<br>│&nbsp;&nbsp;&nbsp; └─ 栏目<br>│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; └─ 01 - 文章标题.mp3<br>└─ 未配套</code></section>
+          <form id="appPasswordForm" class="remote-create">
+            <label>设备名称<input id="appPasswordLabel" maxlength="80" value="我的 foobar2000 手机" required /></label>
+            <button class="primary" type="submit">生成连接密码</button>
+          </form>
+          <section class="remote-secret" id="remoteSecret" hidden>
+            <div class="notice warn">密码只显示这一次，请立即完成 foobar2000 配置。</div>
+            <dl><dt>用户名</dt><dd id="remoteUsername"></dd><dt>密码</dt><dd id="remotePassword"></dd></dl>
+            <button class="primary" type="button" id="copyRemoteConfigBtn">复制全部配置</button>
+          </section>
+          <details class="remote-guide" open><summary>foobar2000 连接步骤</summary><ol><li>打开 foobar2000 的 <b>Media Library / Media Servers</b>。</li><li>添加 WebDAV 服务器，粘贴上方地址。</li><li>输入本页生成的用户名和一次性显示的密码。</li><li>扫描完成后，在 foobar2000 中设置后台播放、循环模式和 Push the Tempo 倍速。</li></ol></details>
+          <section class="remote-devices"><div><strong>已授权设备</strong><small>丢失手机或不再使用时，可在这里立即吊销。</small></div><div id="appPasswordList"></div></section>
+        </div>
+      </div>
+    </dialog>
+
     <dialog id="packagesDialog" class="packages-dialog">
       <div class="dialog-card">
         <div class="dialog-head"><div><p class="eyebrow">IMPORT PACKAGES</p><h2>按导入包管理音频</h2></div><button class="icon-close" id="closePackagesBtn" aria-label="关闭导入包管理">×</button></div>
@@ -158,6 +185,6 @@
       </div>
     </dialog>
 
-    <script src="/static/media.js?v=20260903"></script>
+    <script src="/static/media.js?v=20260907-webdav"></script>
   </body>
 </html>

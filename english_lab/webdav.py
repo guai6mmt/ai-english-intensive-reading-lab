@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import json
+import re
 import secrets
 import threading
 import time
@@ -66,7 +68,12 @@ def list_app_passwords(request: Request) -> dict[str, Any]:
                FROM app_passwords WHERE user_id = ? ORDER BY created_at DESC""",
             (user["id"],),
         ).fetchall()
-    return {"enabled": _dav_enabled(), "path": "/dav/", "items": [_public_app_password(row) for row in rows]}
+    return {
+        "enabled": _dav_enabled(),
+        "path": "/dav/",
+        "username": user["username"],
+        "items": [_public_app_password(row) for row in rows],
+    }
 
 
 @router.post("")
@@ -172,61 +179,140 @@ def _authenticate(request: Request) -> dict[str, str] | None:
 
 
 def _dav_name(value: str) -> str:
-    return value.replace("/", "／").replace("\\", "＼").strip() or "未分类"
+    replacements = str.maketrans({
+        "/": "／", "\\": "＼", ":": "：", "*": "＊", "?": "？",
+        '"': "＂", "<": "＜", ">": "＞", "|": "｜",
+    })
+    return str(value or "").translate(replacements).strip(" .") or "未分类"
 
 
-def _media_filename(row: Any) -> str:
+def _media_filename(row: Any, title: str | None = None, order: int | None = None) -> str:
     name = Path(row["original_name"] or row["title"] or "audio").name
     stem, suffix = Path(name).stem, Path(name).suffix
-    return f"{stem} [{row['id'][:8]}]{suffix}"
+    display = _dav_name(title or stem)
+    if suffix and display.lower().endswith(suffix.lower()):
+        display = display[:-len(suffix)].rstrip()
+    prefix = f"{order:02d} - " if order is not None else ""
+    return f"{prefix}{display} [{row['id'][:8]}]{suffix}"
 
 
-def _collections() -> list[dict[str, Any]]:
+def _library_metadata() -> dict[str, dict[str, Any]]:
+    path = config.data_root / "library.json"
+    try:
+        library = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for source in library.get("sources", []):
+        source_name = str(source.get("filename") or "")
+        section_orders: dict[str, int] = {}
+        for article in source.get("articles", []):
+            article_id = str(article.get("id") or "")
+            if not article_id:
+                continue
+            section = str(article.get("section") or "未分类")
+            section_orders[section] = section_orders.get(section, 0) + 1
+            result[article_id] = {
+                "source_name": source_name,
+                "title": str(article.get("title") or ""),
+                "section": section,
+                "order": section_orders[section],
+            }
+    return result
+
+
+def _issue_label(value: str) -> str:
+    text = Path(str(value or "")).stem
+    numeric = re.search(r"(20\d{2})[-_. ]?(0[1-9]|1[0-2])[-_. ]?([0-2]\d|3[01])", text)
+    if numeric:
+        return "-".join(numeric.groups())
+    months = {
+        name.lower(): index for index, name in enumerate((
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December",
+        ), 1)
+    }
+    named = re.search(
+        r"\b(" + "|".join(months) + r")[\s._-]+([0-3]?\d)(?:st|nd|rd|th)?[\s,._-]+(20\d{2})\b",
+        text, re.I,
+    )
+    if named:
+        month, day, year = named.groups()
+        return f"{year}-{months[month.lower()]:02d}-{int(day):02d}"
+    return "未标注期号"
+
+
+def _publication_label(value: str) -> str:
+    text = Path(str(value or "")).stem
+    text = re.sub(r"20\d{2}[-_. ]?(?:0[1-9]|1[0-2])[-_. ]?(?:[0-2]\d|3[01])", " ", text)
+    text = re.sub(
+        r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)"
+        r"[\s._-]+[0-3]?\d(?:st|nd|rd|th)?[\s,._-]+20\d{2}\b",
+        " ", text, flags=re.I,
+    )
+    text = re.sub(r"\b(?:audio\s+edition|audio|edition|issue)\b", " ", text, flags=re.I)
+    text = re.sub(r"[_\-.]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if "economist" in text.lower():
+        return "The Economist"
+    return _dav_name(text)
+
+
+def _media_rows() -> list[Any]:
     with connect() as connection:
-        rows = connection.execute(
-            """SELECT collections.id, collections.name, COUNT(media_items.id) AS item_count,
-                      MAX(media_items.updated_at) AS updated_at
-               FROM collections JOIN media_items ON media_items.collection_id = collections.id
-               WHERE media_items.deleted_at IS NULL
-               GROUP BY collections.id, collections.name ORDER BY collections.name COLLATE NOCASE"""
-        ).fetchall()
-        ungrouped = connection.execute(
-            """SELECT COUNT(*) AS item_count, MAX(updated_at) AS updated_at
-               FROM media_items WHERE collection_id IS NULL AND deleted_at IS NULL"""
-        ).fetchone()
-    items = [{"id": row["id"], "name": _dav_name(row["name"]), "count": row["item_count"],
-              "updated_at": row["updated_at"]} for row in rows]
-    if ungrouped and ungrouped["item_count"]:
-        items.append({"id": "__unclassified__", "name": "未分类", "count": ungrouped["item_count"],
-                      "updated_at": ungrouped["updated_at"]})
-    return items
-
-
-def _collection_by_name(name: str) -> dict[str, Any] | None:
-    return next((item for item in _collections() if item["name"] == name), None)
-
-
-def _media_for_collection(collection_id: str) -> list[Any]:
-    with connect() as connection:
-        if collection_id == "__unclassified__":
-            return connection.execute(
-                """SELECT id, title, original_name, storage_path, mime_type, file_size, updated_at
-                   FROM media_items WHERE collection_id IS NULL AND deleted_at IS NULL
-                   ORDER BY title COLLATE NOCASE"""
-            ).fetchall()
         return connection.execute(
-            """SELECT id, title, original_name, storage_path, mime_type, file_size, updated_at
-               FROM media_items WHERE collection_id = ? AND deleted_at IS NULL
-               ORDER BY title COLLATE NOCASE""",
-            (collection_id,),
+            """SELECT media_items.id, media_items.title, media_items.original_name,
+                      media_items.storage_path, media_items.mime_type, media_items.file_size,
+                      media_items.updated_at, collections.name AS collection_name,
+                      article_media_links.article_id
+               FROM media_items
+               LEFT JOIN collections ON collections.id = media_items.collection_id
+               LEFT JOIN article_media_links ON article_media_links.media_id = media_items.id
+               WHERE media_items.deleted_at IS NULL
+               ORDER BY collections.name COLLATE NOCASE, media_items.title COLLATE NOCASE"""
         ).fetchall()
 
 
-def _resolve_file(collection_name: str, filename: str) -> Any | None:
-    collection = _collection_by_name(collection_name)
-    if not collection:
-        return None
-    return next((row for row in _media_for_collection(collection["id"]) if _media_filename(row) == filename), None)
+def _directory(name: str) -> dict[str, Any]:
+    return {"name": name, "directory": True, "children": {}, "updated_at": None}
+
+
+def _catalog_tree() -> dict[str, Any]:
+    root = _directory("English Lab")
+    metadata = _library_metadata()
+    for row in _media_rows():
+        article = metadata.get(str(row["article_id"] or ""))
+        if article:
+            source_name = article["source_name"] or row["collection_name"] or "未分类"
+            parts = [
+                _publication_label(source_name),
+                _issue_label(source_name),
+                _dav_name(article["section"]),
+            ]
+            filename = _media_filename(row, article["title"] or row["title"], article["order"])
+        else:
+            parts = ["未配套", _dav_name(row["collection_name"] or "未分类")]
+            filename = _media_filename(row)
+        node = root
+        for part in parts:
+            child = node["children"].setdefault(part, _directory(part))
+            node = child
+            if not node["updated_at"] or str(row["updated_at"] or "") > node["updated_at"]:
+                node["updated_at"] = str(row["updated_at"] or "")
+        node["children"][filename] = {
+            "name": filename, "directory": False, "row": row,
+            "updated_at": row["updated_at"],
+        }
+    return root
+
+
+def _resolve_node(path_parts: list[str]) -> dict[str, Any] | None:
+    node = _catalog_tree()
+    for part in path_parts:
+        node = node.get("children", {}).get(part)
+        if not node:
+            return None
+    return node
 
 
 def _http_date(value: str | None) -> str:
@@ -258,32 +344,27 @@ def _response_node(multistatus: ET.Element, href: str, name: str, *, directory: 
 def _multistatus(path_parts: list[str], depth: str) -> Response:
     ET.register_namespace("D", "DAV:")
     root = ET.Element("{DAV:}multistatus")
-    if not path_parts:
-        _response_node(root, "/dav/", "English Lab", directory=True)
-        if depth != "0":
-            for collection in _collections():
-                href = "/dav/" + quote(collection["name"], safe="") + "/"
-                _response_node(root, href, collection["name"], directory=True, updated_at=collection["updated_at"])
-    elif len(path_parts) == 1:
-        collection = _collection_by_name(path_parts[0])
-        if not collection:
-            return Response(status_code=404)
-        base = "/dav/" + quote(collection["name"], safe="") + "/"
-        _response_node(root, base, collection["name"], directory=True)
-        if depth != "0":
-            for row in _media_for_collection(collection["id"]):
-                filename = _media_filename(row)
-                _response_node(root, base + quote(filename, safe=""), filename, directory=False,
-                               size=row["file_size"], mime=row["mime_type"], updated_at=row["updated_at"])
-    elif len(path_parts) == 2:
-        row = _resolve_file(path_parts[0], path_parts[1])
-        if not row:
-            return Response(status_code=404)
-        href = "/dav/" + quote(path_parts[0], safe="") + "/" + quote(path_parts[1], safe="")
-        _response_node(root, href, path_parts[1], directory=False, size=row["file_size"],
-                       mime=row["mime_type"], updated_at=row["updated_at"])
-    else:
+    node = _resolve_node(path_parts)
+    if not node:
         return Response(status_code=404)
+    base = "/dav/" + "/".join(quote(part, safe="") for part in path_parts)
+    if node["directory"]:
+        href = base.rstrip("/") + "/"
+        _response_node(root, href, node["name"], directory=True, updated_at=node.get("updated_at"))
+        if depth != "0":
+            for child in sorted(node["children"].values(), key=lambda item: item["name"].casefold()):
+                child_href = href + quote(child["name"], safe="") + ("/" if child["directory"] else "")
+                row = child.get("row")
+                _response_node(
+                    root, child_href, child["name"], directory=child["directory"],
+                    size=row["file_size"] if row else None,
+                    mime=row["mime_type"] if row else None,
+                    updated_at=child.get("updated_at"),
+                )
+    else:
+        row = node["row"]
+        _response_node(root, base, node["name"], directory=False, size=row["file_size"],
+                       mime=row["mime_type"], updated_at=row["updated_at"])
     return Response(ET.tostring(root, encoding="utf-8", xml_declaration=True), status_code=207,
                     media_type="application/xml; charset=utf-8")
 
@@ -305,11 +386,10 @@ async def dav_endpoint(request: Request) -> Response:
         if depth not in {"0", "1"}:
             return Response(status_code=403)
         return _multistatus(parts, depth)
-    if len(parts) != 2:
+    node = _resolve_node(parts)
+    if not node or node["directory"]:
         return Response(status_code=404)
-    row = _resolve_file(parts[0], parts[1])
-    if not row:
-        return Response(status_code=404)
+    row = node["row"]
     target = (config.media_root / row["storage_path"]).resolve()
     try:
         target.relative_to(config.media_root)

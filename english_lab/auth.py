@@ -166,7 +166,7 @@ def login_page() -> FileResponse:
 
 @router.get("/media", include_in_schema=False)
 def media_page() -> FileResponse:
-    return FileResponse(STATIC_DIR / "media.html")
+    return FileResponse(STATIC_DIR / "media.html", headers={"Cache-Control": "no-store"})
 
 
 @router.get("/service-worker.js", include_in_schema=False)

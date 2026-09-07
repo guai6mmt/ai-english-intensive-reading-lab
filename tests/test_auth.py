@@ -42,6 +42,13 @@ def test_reader_forces_fresh_desktop_assets(authenticated_client):
     assert worker.headers["cache-control"] == "no-cache"
     assert "english-lab-reader-v2" in worker.text
 
+    media = client.get("/media")
+    assert media.status_code == 200
+    assert media.headers["cache-control"] == "no-store"
+    assert "/static/media.js?v=20260907-webdav" in media.text
+    assert 'id="externalAccessBtn"' in media.text
+    assert 'id="appPasswordForm"' in media.text
+
 
 def test_sensitive_settings_are_encrypted_at_rest(authenticated_client):
     client, csrf = authenticated_client

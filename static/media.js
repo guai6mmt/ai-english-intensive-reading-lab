@@ -19,6 +19,8 @@ const state = {
   restoredPlayback: false,
   deepLinkRestored: false,
   pairing: { options: null, candidates: [], media: [], original: new Map() },
+  remoteAccess: null,
+  remoteCredentials: null,
 };
 
 const PLAYBACK_KEY = "el_media_playback_v1";
@@ -74,6 +76,76 @@ function showNotice(message, error = false) {
   box.hidden = !message;
   box.textContent = message || "";
   box.classList.toggle("is-error", Boolean(error));
+}
+
+function foobarWebDavUrl() {
+  const scheme = location.protocol === "https:" ? "webdav-https" : "webdav-http";
+  return `${scheme}://${location.host}/dav/`;
+}
+
+async function copyText(value) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+  } else {
+    const input = document.createElement("textarea");
+    input.value = value;
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.appendChild(input);
+    input.select();
+    document.execCommand("copy");
+    input.remove();
+  }
+  showNotice("已复制到剪贴板。");
+}
+
+function renderRemoteDevices() {
+  const data = state.remoteAccess;
+  if (!data) return;
+  $("remoteDisabled").hidden = data.enabled;
+  $("remoteEnabled").hidden = !data.enabled;
+  if (!data.enabled) return;
+  $("foobarDavUrl").textContent = foobarWebDavUrl();
+  $("davQr").src = `/api/v1/app-passwords/qr?v=${Date.now()}`;
+  const active = (data.items || []).filter((item) => !item.revoked_at);
+  $("appPasswordList").innerHTML = active.map((item) => `
+    <div class="remote-device">
+      <div><strong>${esc(item.label)}</strong><small>${item.last_used_at ? `最近使用 ${esc(item.last_used_at)}` : "尚未连接"}</small></div>
+      <button class="quiet" type="button" data-revoke-password="${esc(item.id)}">吊销</button>
+    </div>`).join("") || `<div class="remote-empty">还没有已授权的外部播放器。</div>`;
+}
+
+async function loadRemoteAccess() {
+  state.remoteAccess = await api("/api/v1/app-passwords");
+  renderRemoteDevices();
+}
+
+async function openRemoteAccess() {
+  state.remoteCredentials = null;
+  $("remoteSecret").hidden = true;
+  $("remoteEnabled").hidden = true;
+  $("remoteDisabled").hidden = true;
+  $("externalAccessDialog").showModal();
+  try { await loadRemoteAccess(); }
+  catch (error) { $("remoteDisabled").hidden = false; $("remoteDisabled").textContent = error.message; }
+}
+
+async function createRemoteAccess(event) {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector("button[type='submit']");
+  button.disabled = true;
+  try {
+    const credentials = await api("/api/v1/app-passwords", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: $("appPasswordLabel").value.trim() }),
+    });
+    state.remoteCredentials = credentials;
+    $("remoteUsername").textContent = credentials.username;
+    $("remotePassword").textContent = credentials.password;
+    $("remoteSecret").hidden = false;
+    await loadRemoteAccess();
+  } catch (error) { showNotice(error.message, true); }
+  finally { button.disabled = false; }
 }
 
 async function loadData(append = false) {
@@ -603,6 +675,17 @@ document.addEventListener("click", async (event) => {
   const button = event.target.closest("button, [data-play]");
   if (!button) return;
   try {
+    if (button.dataset.copyTarget) {
+      const target = $(button.dataset.copyTarget);
+      if (target) await copyText(target.textContent || "");
+      return;
+    }
+    if (button.dataset.revokePassword) {
+      if (!confirm("吊销后，该设备将立即无法访问音频库。继续？")) return;
+      await api(`/api/v1/app-passwords/${encodeURIComponent(button.dataset.revokePassword)}`, { method: "DELETE" });
+      await loadRemoteAccess();
+      return;
+    }
     if (button.dataset.pairPreview) {
       const candidate = state.pairing.candidates.find((item) => item.article_id === button.dataset.pairPreview);
       const item = state.pairing.media.find((media) => media.id === candidate?.media_id);
@@ -640,6 +723,14 @@ document.addEventListener("click", async (event) => {
 });
 
 $("importBtn").addEventListener("click", () => $("importDialog").showModal());
+$("externalAccessBtn").addEventListener("click", () => openRemoteAccess());
+$("closeExternalAccessBtn").addEventListener("click", () => $("externalAccessDialog").close());
+$("appPasswordForm").addEventListener("submit", createRemoteAccess);
+$("copyRemoteConfigBtn").addEventListener("click", () => {
+  if (!state.remoteCredentials) return;
+  copyText(`foobar2000 WebDAV\n地址：${foobarWebDavUrl()}\n用户名：${state.remoteCredentials.username}\n密码：${state.remoteCredentials.password}`)
+    .catch((error) => showNotice(error.message, true));
+});
 $("packagesBtn").addEventListener("click", () => openPackages());
 $("closePackagesBtn").addEventListener("click", () => $("packagesDialog").close());
 $("pairBtn").addEventListener("click", () => openPairing());
@@ -745,4 +836,5 @@ window.EnglishLabAuth.ready.then((session) => {
   $("userBtn").textContent = session.user.username.slice(0,1).toUpperCase();
   loadData();
   if (new URLSearchParams(location.search).get("import") === "folder") $("importDialog").showModal();
+  if (location.hash === "#external-access") openRemoteAccess();
 });
