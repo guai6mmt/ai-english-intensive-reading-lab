@@ -74,7 +74,7 @@ async function openArticle(id, version){
  const byParagraph=new Map();for(const item of sentenceItems){const list=byParagraph.get(item.para)||[];list.push(item);byParagraph.set(item.para,list);}
  const renderLoose=text=>splitSentences(text).map(part=>part.trim()?`<span class="sentence" role="button" tabindex="0">${esc(part)}</span>`:esc(part)).join('');
  const renderParagraph=(text,paraIndex)=>{let cursor=0,html='';for(const item of (byParagraph.get(paraIndex)||[])){const position=text.indexOf(item.text,cursor);if(position<0)continue;html+=renderLoose(text.slice(cursor,position));html+=`<span class="sentence" role="button" tabindex="0" data-align-index="${item.index}">${esc(item.text)}</span>`;cursor=position+item.text.length;}return html+renderLoose(text.slice(cursor));};
- $('main').innerHTML=`<article class="reader"><a class="muted" href="#">← 文章库</a><h1 lang="en">${esc(a.title)}</h1><div class="meta">${esc(a.section||'英语阅读')} · 点击句子查看 AI 翻译${a.linked_media?' · 播放原版音频时自动高亮当前句':' · 暂无配套音频'}</div><div class="prose" lang="en">${paragraphs.map(({text,index})=>`<p>${renderParagraph(text,index)}</p>`).join('')}</div></article>`;
+ $('main').innerHTML=`<article class="reader"><a class="muted" href="#">← 文章库</a><h1 lang="en">${esc(a.title)}</h1><div class="meta">${esc(a.section||'英语阅读')} · 点击句子查看 AI 译文、长难句拆分与语法解析${a.linked_media?' · 播放原版音频时自动高亮当前句':' · 暂无配套音频'}</div><div class="prose" lang="en">${paragraphs.map(({text,index})=>`<p>${renderParagraph(text,index)}</p>`).join('')}</div></article>`;
  const last=localStorage.getItem('read-position:'+id);if(last){const els=document.querySelectorAll('.sentence');els[Number(last)]?.scrollIntoView({block:'center'});}
  $('main').onclick=e=>{const el=e.target.closest('.sentence');if(el)run(()=>translateSentence(el));};
  $('main').onkeydown=e=>{if(e.target.matches('.sentence')&&['Enter',' '].includes(e.key)){e.preventDefault();run(()=>translateSentence(e.target));}};
@@ -87,8 +87,8 @@ async function translateSentence(el){
  document.querySelector('.sentence.selected')?.classList.remove('selected');el.classList.add('selected');
  localStorage.setItem('read-position:'+article.id,[...document.querySelectorAll('.sentence')].indexOf(el));
  const spec={article_id:article.id,sentence:el.textContent.trim()};selected=spec;const version=++translationVersion;
- $('selectedSentence').textContent=spec.sentence;$('translated').textContent='正在结合上下文翻译…';$('saveSentence').disabled=true;$('saveSentence').textContent='收藏到句子本';$('translation').showModal();
- try{const result=await api('/api/sentences/translate',spec);if(version!==translationVersion)return;$('translated').textContent=result.translation;$('saveSentence').disabled=false;}catch(e){if(version===translationVersion)$('translated').textContent=e.message;}
+ $('selectedSentence').textContent=spec.sentence;$('analysisStatus').textContent='正在结合上下文拆解句子与分析语法…';$('analysisResult').hidden=true;$('saveSentence').disabled=true;$('saveSentence').textContent='收藏到句子本';$('translation').showModal();
+ try{const result=await api('/api/sentences/translate',spec);if(version!==translationVersion)return;$('translated').textContent=result.translation;$('sentenceStructure').textContent=result.structure;$('clauseAnalysis').innerHTML=result.clauses.map(item=>`<li><p lang="en">${esc(item.text)}</p><strong>${esc(item.role)}</strong><span>${esc(item.explanation)}</span></li>`).join('');$('grammarAnalysis').innerHTML=result.grammar_points.map(item=>`<li><strong>${esc(item.point)}</strong><code lang="en">${esc(item.evidence)}</code><span>${esc(item.explanation)}</span></li>`).join('');$('analysisStatus').textContent='';$('analysisResult').hidden=false;$('saveSentence').disabled=false;}catch(e){if(version===translationVersion)$('analysisStatus').textContent=e.message;}
 }
 async function renderSentences(due=false,version=routeVersion){
  const data=await api('/api/vocabulary?kind=sentence&limit=2000'+(due?'&due=true':''));if(version!==routeVersion)return;

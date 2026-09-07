@@ -17,13 +17,30 @@ def test_translation_save_review_and_cache(authenticated_client, monkeypatch):
     calls = []
     def fake(*args, **kwargs):
         calls.append(args)
-        return {'translation': '他听原版录音。'}, {'used_ai': True, 'provider': 'deepseek', 'model': 'test'}
+        return {
+            'translation': '他听原版录音。',
+            'structure': '主语 He + 谓语 listens + 介词短语。',
+            'clauses': [{
+                'text': 'He listens', 'role': '主句主干',
+                'explanation': 'He 是主语，listens 是谓语。',
+            }, {
+                'text': 'to the original recording', 'role': '介词短语',
+                'explanation': '说明倾听的对象。',
+            }],
+            'grammar_points': [{
+                'point': '一般现在时', 'evidence': 'listens',
+                'explanation': '三单主语后动词加 s。',
+            }],
+        }, {'used_ai': True, 'provider': 'deepseek', 'model': 'test'}
     monkeypatch.setattr(application, 'call_ai_json', fake)
     headers = {'X-CSRF-Token': csrf}
     spec = {'article_id': aid, 'sentence': 'He listens to the original recording.'}
     first = client.post('/api/sentences/translate', json=spec, headers=headers)
     assert first.status_code == 200, first.text
     assert first.json()['cached'] is False
+    assert first.json()['structure'].startswith('主语 He')
+    assert first.json()['clauses'][1]['role'] == '介词短语'
+    assert first.json()['grammar_points'][0]['evidence'] == 'listens'
     assert client.post('/api/sentences/translate', json=spec, headers=headers).json()['cached'] is True
     saved = client.post('/api/sentences', json=spec, headers=headers).json()['item']
     again = client.post('/api/sentences', json=spec, headers=headers).json()['item']
@@ -44,6 +61,19 @@ def test_failed_ai_is_not_a_translation(authenticated_client, monkeypatch):
     aid = imported(client, csrf)
     monkeypatch.setattr(application, 'call_ai_json', lambda *a, **k: (None, {'used_ai': False}))
     response = client.post('/api/sentences/translate', json={'article_id': aid, 'sentence': 'Dr. Smith reads every morning.'}, headers={'X-CSRF-Token': csrf})
+    assert response.status_code == 503
+
+
+def test_incomplete_ai_analysis_is_rejected(authenticated_client, monkeypatch):
+    client, csrf = authenticated_client
+    aid = imported(client, csrf)
+    monkeypatch.setattr(application, 'call_ai_json', lambda *a, **k: (
+        {'translation': '只有译文。'},
+        {'used_ai': True, 'provider': 'deepseek', 'model': 'test'},
+    ))
+    response = client.post('/api/sentences/translate', json={
+        'article_id': aid, 'sentence': 'Dr. Smith reads every morning.',
+    }, headers={'X-CSRF-Token': csrf})
     assert response.status_code == 503
 
 

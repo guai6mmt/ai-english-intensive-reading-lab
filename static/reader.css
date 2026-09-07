@@ -5,3 +5,19 @@
 
 @media(max-width:800px){.library-filters{grid-template-columns:1fr 1fr}.filter-search{grid-column:1/-1}.library-filters button{grid-column:1/-1}}
 @media(max-width:700px){.library-filters{grid-template-columns:1fr}.filter-search,.library-filters button{grid-column:auto}.source{margin-top:24px}#dock>div{max-width:calc(100% - 116px)}}
+
+/* Sentence close-reading dialog */
+#translation{max-width:680px}
+.analysis-section{padding:16px 0;border-top:1px solid var(--line)}
+.analysis-section h3{margin:0 0 8px;color:var(--accent);font-size:15px}
+.analysis-section p{margin:0;line-height:1.85}
+.analysis-list{margin:0;padding-left:22px}
+.analysis-list li{padding:5px 0 12px}
+.analysis-list li p{font:17px/1.6 Georgia,serif}
+.analysis-list strong,.analysis-list span,.analysis-list code{display:block}
+.analysis-list strong{margin-top:5px}
+.analysis-list span{color:var(--muted);line-height:1.7}
+.analysis-list code{width:max-content;max-width:100%;margin:5px 0;padding:3px 7px;border-radius:5px;background:#e8eee6;color:var(--ink);font-size:13px;white-space:normal}
+#analysisStatus{color:var(--muted)}
+#translation>.primary{margin-top:12px}
+@media(max-width:700px){#selectedSentence{font-size:19px}.analysis-section{padding:13px 0}}
