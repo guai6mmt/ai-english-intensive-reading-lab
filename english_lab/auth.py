@@ -173,6 +173,7 @@ def media_page() -> FileResponse:
 def service_worker() -> FileResponse:
     response = FileResponse(STATIC_DIR / "service-worker.js", media_type="text/javascript")
     response.headers["Service-Worker-Allowed"] = "/"
+    response.headers["Cache-Control"] = "no-cache"
     return response
 
 
