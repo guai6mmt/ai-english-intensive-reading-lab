@@ -34,6 +34,51 @@ def test_original_audio_alignment_fills_unmatched_sentence_ranges():
     assert result[2]['estimated'] is False
 
 
+def _asr_sentence(text: str, start_ms: int, step_ms: int = 400) -> dict:
+    words = []
+    clock = start_ms
+    for token in text.split():
+        words.append({"text": token, "begin_time": clock, "end_time": clock + step_ms - 50})
+        clock += step_ms
+    return {"text": text, "begin_time": start_ms, "end_time": clock, "words": words}
+
+
+def test_original_alignment_skips_audio_only_passages():
+    """Intro/rubric/outro spoken but absent from the article must not be glued
+    onto a sentence or shift the timeline that follows."""
+    import app as application
+
+    items = [
+        {"index": 0, "para": 0, "text": "The council approved the new bridge budget."},
+        {"index": 1, "para": 1, "text": "Residents welcomed the decision after years of delay."},
+    ]
+    asr_sentences = [
+        _asr_sentence("welcome to the audio edition", 0),          # intro, not in article
+        _asr_sentence("the council approved the new bridge budget", 5000),
+        _asr_sentence("section two politics", 9000),               # spoken rubric, not in article
+        _asr_sentence("residents welcomed the decision after years of delay", 12000),
+        _asr_sentence("that is all for today", 16000),             # outro, not in article
+    ]
+
+    result = application.align_asr_words_to_original(items, asr_sentences)
+
+    assert len(result) == 2
+    # Sentence one begins where it is actually narrated (5000ms), not at the
+    # start of the intro (0ms).
+    assert result[0]["begin_ms"] >= 3000
+    assert "welcome" not in result[0]["asr_text"]
+    assert "council" in result[0]["asr_text"]
+    # The rubric between paragraphs is skipped, so sentence two still lands on
+    # its own narration instead of swallowing "section two politics".
+    assert result[1]["begin_ms"] >= 11000
+    assert "section" not in result[1]["asr_text"]
+    assert "politics" not in result[1]["asr_text"]
+    assert "today" not in result[1]["asr_text"]
+    assert result[1]["begin_ms"] > result[0]["begin_ms"]
+    assert result[0]["confidence"] == 1.0
+    assert result[1]["confidence"] == 1.0
+
+
 def wav_bytes(seconds: float = 0.12) -> bytes:
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as output:

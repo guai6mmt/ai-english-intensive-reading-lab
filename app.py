@@ -1933,57 +1933,69 @@ def _asr_word_timings(asr_sentences: list[dict[str, Any]]) -> list[dict[str, Any
 
 
 def align_asr_words_to_original(items: list[dict[str, Any]], asr_sentences: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Map each article sentence to the moment it is actually spoken.
+
+    Original recordings routinely voice material the article never prints: an
+    intro read aloud, a spoken section rubric, a byline, or a few seconds of
+    closing trailer. A left-to-right greedy walk has to spend those extra words
+    on *some* sentence, so it glues the intro onto sentence one and then drifts
+    for the rest of the piece.
+
+    Instead we align the whole article token stream against the whole ASR word
+    stream with difflib. Passages that exist only in the audio surface as
+    ``insert`` gaps and stay unmapped, so each article word anchors to the word
+    genuinely spoken for it -- the intro no longer bleeds into the first
+    sentence, and a rubric dropped between paragraphs no longer shifts everything
+    after it. Sentences that never anchor are left empty for the caller's
+    proportional gap-filling.
+    """
     word_items = _asr_word_timings(asr_sentences)
     if not word_items:
         return []
 
-    alignments: list[dict[str, Any]] = []
-    cursor = 0
+    tokens: list[str] = []
+    counts: list[int] = []
     for item in items:
-        original_norm = normalize_for_alignment(item["text"])
-        original_words = original_norm.split()
-        if not original_words or cursor >= len(word_items):
-            alignments.append({
-                "index": item["index"],
-                "para": item["para"],
-                "text": item["text"],
-                "asr_text": "",
-                "begin_ms": None,
-                "end_ms": None,
-                "confidence": 0.0,
-                "words": [],
-            })
-            continue
+        sentence_tokens = normalize_for_alignment(item["text"]).split()
+        counts.append(len(sentence_tokens))
+        tokens.extend(sentence_tokens)
 
-        expected = len(original_words)
-        min_end = cursor + max(1, expected - 8)
-        max_end = min(len(word_items), cursor + expected + 10)
-        min_end = min(min_end, max_end)
-        best: tuple[float, int, str] | None = None
-        for end in range(cursor + 1, max_end + 1):
-            if end < min_end:
+    asr_index: list[int | None] = [None] * len(tokens)
+    if tokens:
+        matcher = difflib.SequenceMatcher(None, tokens, [w["norm"] for w in word_items], autojunk=False)
+        for tag, i1, i2, j1, _j2 in matcher.get_opcodes():
+            if tag != "equal":
                 continue
-            candidate = " ".join(w["norm"] for w in word_items[cursor:end])
-            score = difflib.SequenceMatcher(None, original_norm, candidate).ratio()
-            if best is None or score > best[0]:
-                best = (score, end, candidate)
+            # A lone short function word ("the", "of", "a") can match across an
+            # audio-only gap and drag a sentence's start into the intro. Trust a
+            # single-token anchor only when the word itself is distinctive.
+            if i2 - i1 == 1 and len(tokens[i1]) < 4:
+                continue
+            for offset in range(i2 - i1):
+                asr_index[i1 + offset] = j1 + offset
 
-        if best is None:
-            end = min(len(word_items), cursor + expected)
-            score = 0.0
-        else:
-            score, end, _candidate = best
-
-        selected = word_items[cursor:end]
-        cursor = end
+    alignments: list[dict[str, Any]] = []
+    token_start = 0
+    for position, item in enumerate(items):
+        count = counts[position]
+        anchored = [asr_index[k] for k in range(token_start, token_start + count) if asr_index[k] is not None]
+        token_start += count
+        if not anchored:
+            alignments.append(_empty_alignment(item))
+            continue
+        # difflib opcodes are monotonic, so anchored indices are already sorted:
+        # the contiguous ASR span covers the mis-recognised words in between too.
+        selected = word_items[anchored[0]:anchored[-1] + 1]
+        begin = selected[0]["begin_ms"]
+        end = selected[-1]["end_ms"]
         alignments.append({
             "index": item["index"],
             "para": item["para"],
             "text": item["text"],
             "asr_text": " ".join(w["text"] for w in selected),
-            "begin_ms": selected[0]["begin_ms"] if selected else None,
-            "end_ms": selected[-1]["end_ms"] if selected else None,
-            "confidence": round(score, 3),
+            "begin_ms": begin,
+            "end_ms": max(end, begin + 1),
+            "confidence": round(len(anchored) / max(1, count), 3),
             "words": [w["raw"] for w in selected],
         })
     return alignments
