@@ -41,9 +41,9 @@ function installAudioTimeline(result){
  $('syncStatus').textContent=entries.length?`逐句高亮已就绪 · ${precise} 句精确${estimated?`，${estimated} 句补间`:''}`:'当前音频没有可用的句子时间轴';
  updateAudioHighlight();
 }
-async function loadAudioTimeline(articleId,version){
+async function loadAudioTimeline(articleId,version,refresh=false){
  const requestVersion=++syncVersion;
- const started=await api(`/api/articles/${encodeURIComponent(articleId)}/listening/original-audio/start`,{refresh:false,enable_words:true});
+ const started=await api(`/api/articles/${encodeURIComponent(articleId)}/listening/original-audio/start`,{refresh,enable_words:true});
  if(version!==routeVersion||requestVersion!==syncVersion)return;
  if(started.result){installAudioTimeline(started.result);return;}
  if(!started.task_id)throw new Error('服务器没有返回对齐任务');
@@ -78,7 +78,7 @@ async function openArticle(id, version){
  const last=localStorage.getItem('read-position:'+id);if(last){const els=document.querySelectorAll('.sentence');els[Number(last)]?.scrollIntoView({block:'center'});}
  $('main').onclick=e=>{const el=e.target.closest('.sentence');if(el)run(()=>translateSentence(el));};
  $('main').onkeydown=e=>{if(e.target.matches('.sentence')&&['Enter',' '].includes(e.key)){e.preventDefault();run(()=>translateSentence(e.target));}};
- if(a.linked_media){audioMedia=a.linked_media;$('audioTitle').textContent='原版音频';$('audioHint').textContent=a.linked_media.title;$('syncStatus').textContent='正在读取句子时间轴…';$('dock').hidden=false;$('audio').src=a.linked_media.stream_url;
+ if(a.linked_media){audioMedia=a.linked_media;$('audioTitle').textContent='原版音频';$('audioHint').textContent=a.linked_media.title;$('syncStatus').textContent='正在读取句子时间轴…';$('dock').hidden=false;$('realignBtn').hidden=false;$('realignBtn').disabled=false;$('audio').src=a.linked_media.stream_url;
   const mediaId=audioMedia.id;try{const saved=await api(`/api/v1/media/items/${encodeURIComponent(mediaId)}`);if(version!==routeVersion)return;const progress=saved.item?.progress||saved.progress||saved.item||{};const restore=()=>{if(audioMedia?.id!==mediaId)return;$('audio').currentTime=(progress.position_ms||0)/1000;const requested=Number(progress.playback_rate)||1;const choices=[...$('rate').options].map(option=>Number(option.value));const restored=choices.reduce((best,value)=>Math.abs(value-requested)<Math.abs(best-requested)?value:best,1);$('audio').playbackRate=restored;$('rate').value=String(restored);};if($('audio').readyState>=1)restore();else $('audio').addEventListener('loadedmetadata',restore,{once:true});}catch(e){notice('音频可播放，但历史播放进度读取失败。');}
   loadAudioTimeline(id,version).catch(error=>{if(version===routeVersion)$('syncStatus').textContent=`逐句高亮暂不可用：${error.message}`;});
  }
@@ -106,4 +106,5 @@ $('translation').addEventListener('close',()=>{++translationVersion;});
 $('importForm').onsubmit=e=>{e.preventDefault();run(async()=>{const file=$('articleFile').files[0],zip=$('audioFile').files[0];if(zip&&!file.name.toLowerCase().endsWith('.epub'))throw new Error('配套音频 ZIP 请与 EPUB 一起导入。');const form=new FormData();form.append(zip?'epub':'file',file);if(zip)form.append('audio_zip',zip);const b=$('importForm').querySelector('button');b.disabled=true;$('importStatus').textContent='正在上传并导入，请保持页面打开…';try{const result=await api(zip?'/api/issues/import':'/api/upload',form);$('importStatus').textContent=result.audio?.error?`文章已导入，音频失败：${result.audio.error}`:'导入完成。'+(zip?'请在设置 → 音频管理中检查并确认配对。':'');await library();if(!location.hash||location.hash==='#')renderLibrary();}catch(e){$('importStatus').textContent=e.message;}finally{b.disabled=false;}});};
 $('fontSize').value=localStorage.getItem('reading-size')||'19';document.documentElement.style.setProperty('--reading-size',$('fontSize').value+'px');$('fontSize').onchange=()=>{localStorage.setItem('reading-size',$('fontSize').value);document.documentElement.style.setProperty('--reading-size',$('fontSize').value+'px');};
 $('rate').onchange=()=>{$('audio').playbackRate=Number($('rate').value);run(persistAudio);};$('audio').ontimeupdate=()=>{updateAudioHighlight();if(Date.now()-lastAudioSave>10000){lastAudioSave=Date.now();persistAudio().catch(()=>{});}};$('audio').onseeked=updateAudioHighlight;$('audio').onpause=()=>persistAudio().catch(()=>{});$('audio').onended=()=>{updateAudioHighlight();persistAudio().catch(()=>{});};$('audio').onerror=()=>{if(audioMedia)notice('音频加载失败，请检查网络或音频管理中的文件。');};
+$('realignBtn').onclick=()=>{if(!article||!audioMedia)return;const id=article.id,version=routeVersion,btn=$('realignBtn');btn.disabled=true;$('syncStatus').textContent='正在重新生成逐句对齐…';loadAudioTimeline(id,version,true).catch(error=>{if(version===routeVersion)$('syncStatus').textContent=`重新生成失败：${error.message}`;}).finally(()=>{if(version===routeVersion)btn.disabled=false;});};
 $('logout').onclick=()=>run(()=>window.EnglishLabAuth.logout());window.addEventListener('hashchange',()=>run(route));document.addEventListener('visibilitychange',()=>{if(document.hidden)persistAudio().catch(()=>{});});run(async()=>{await window.EnglishLabAuth.ready;const oldId=new URLSearchParams(location.search).get('article');if(oldId&&!location.hash)history.replaceState(null,'','/#article/'+encodeURIComponent(oldId));await route();if(new URLSearchParams(location.search).has('first_setup'))$('settingsBtn').click();});
