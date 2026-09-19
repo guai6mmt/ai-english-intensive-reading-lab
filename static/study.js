@@ -5,19 +5,26 @@ let dictationVersion=0;
 const sentenceElements=()=>[...document.querySelectorAll('.prose .sentence')];
 const alignedElements=()=>audioTimeline.filter(t=>document.querySelector(`.sentence[data-align-index="${t.index}"]`));
 const timeLabel=s=>{s=Math.max(0,Math.floor(Number(s)||0));return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;};
+const playerIcon=name=>`<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${{
+ prev:'<path d="M6 5v14M18 5l-9 7 9 7z"/>',next:'<path d="M18 5v14M6 5l9 7-9 7z"/>',
+ play:'<path d="m9 5 10 7-10 7z"/>',pause:'<path d="M8 5v14M16 5v14"/>',
+ more:'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+ pen:'<path d="m15 4 5 5M4 20l5-1L21 7l-5-5L4 14z"/>',
+ headphones:'<path d="M4 15v-3a8 8 0 0 1 16 0v3M4 15v4h4v-6H6a2 2 0 0 0-2 2Zm16 0v4h-4v-6h2a2 2 0 0 1 2 2Z"/>',
+ repeat:'<path d="m17 2 4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4m14-1v2a3 3 0 0 1-3 3H3"/>'
+ }[name]}</svg>`;
 
 // Keep the close/navigation bar outside the scrollable analysis content.
 const analysisDialog=$('translation');
 const closeForm=analysisDialog.querySelector('form');
 const analysisHeader=document.createElement('header');analysisHeader.className='dialog-bar';
-analysisHeader.innerHTML='<span>句子精读 <small id="analysisPosition"></small></span><div><button id="analysisPrev">上一句</button><button id="analysisNext">下一句</button></div>';
-analysisHeader.append(closeForm);
+analysisHeader.innerHTML=`<div class="dialog-title"><strong>句子精读</strong><small id="analysisPosition"></small></div><div class="dialog-toolbar"><button id="analysisListen" class="analysis-tool-action" aria-label="听本句并跟读" title="听本句并跟读">${playerIcon('headphones')}<span>听本句</span></button><button id="analysisDictate" class="analysis-tool-action" aria-label="本句听写" title="本句听写">${playerIcon('pen')}<span>听写</span></button><span class="toolbar-divider" aria-hidden="true"></span><div class="analysis-nav"><button id="analysisPrev" aria-label="上一句" title="上一句">${playerIcon('prev')}</button><button id="analysisNext" aria-label="下一句" title="下一句">${playerIcon('next')}</button></div></div>`;
+analysisHeader.querySelector('.dialog-toolbar').append(closeForm);
 const analysisBody=document.createElement('div');analysisBody.id='analysisBody';analysisBody.className='dialog-body';
 while(analysisDialog.firstChild)analysisBody.append(analysisDialog.firstChild);
 analysisDialog.append(analysisHeader,analysisBody);
 $('grammarAnalysis').closest('section').remove();
 $('translated').closest('section').insertAdjacentHTML('afterend','<section class="analysis-section"><h3>重点生词</h3><ul id="sentenceVocabulary" class="analysis-list"></ul></section>');
-$('selectedSentence').insertAdjacentHTML('afterend','<div class="study-actions"><button id="analysisListen">听本句 / 跟读</button><button id="analysisDictate">本句听写</button></div>');
 function updateAnalysisNavigation(el){
  const items=sentenceElements(),i=items.indexOf(el);
  $('analysisPosition').textContent=`${i+1}/${items.length}`;
@@ -36,13 +43,6 @@ $('analysisListen').onclick=()=>playSegment(selectedAlignment());
 $('analysisDictate').onclick=()=>openDictation(selectedAlignment());
 
 // Compact custom player: no browser-native transport UI.
-const playerIcon=name=>`<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${{
- prev:'<path d="M6 5v14M18 5l-9 7 9 7z"/>',next:'<path d="M18 5v14M6 5l9 7-9 7z"/>',
- play:'<path d="m9 5 10 7-10 7z"/>',pause:'<path d="M8 5v14M16 5v14"/>',
- more:'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
- pen:'<path d="m15 4 5 5M4 20l5-1L21 7l-5-5L4 14z"/>',
- repeat:'<path d="m17 2 4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4m14-1v2a3 3 0 0 1-3 3H3"/>'
- }[name]}</svg>`;
 $('audio').controls=false;$('audio').hidden=true;
 $('audioHint').hidden=true;$('syncStatus').hidden=true;
 $('dock').firstElementChild.hidden=true;

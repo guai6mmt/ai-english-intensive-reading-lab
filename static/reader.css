@@ -51,12 +51,22 @@ html{scroll-padding-bottom:calc(var(--dock-height,0px) + 25px)}
 .dialog-bar form{margin:0}.dialog-bar button{padding:7px 9px;min-height:40px}
 .dialog-bar .close{float:none;min-width:40px;font-size:26px}
 .dialog-bar small{display:block;font-size:12px}
+.dialog-title{display:flex;align-items:baseline;gap:10px;white-space:nowrap;flex:none}.dialog-title strong{font-size:17px}.dialog-title small{font-size:13px;color:var(--muted)}
+#translation .dialog-toolbar{display:flex;align-items:center;gap:7px;margin-left:auto;min-width:0}
+#translation .dialog-toolbar button{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:40px;min-width:40px;padding:7px 11px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink)}
+#translation .dialog-toolbar button:hover:not(:disabled){background:#e8eee6}
+#translation .dialog-toolbar svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+#translation .toolbar-divider{width:1px;height:26px;margin:0 2px;background:var(--line);flex:none}
+#translation .analysis-nav{display:flex;gap:3px}
+#translation .dialog-toolbar form{display:flex;margin:0 0 0 2px;padding-left:8px;border-left:1px solid var(--line)}
+#translation .dialog-toolbar .close{border:0;padding:2px;font-size:27px;line-height:1}
 .dialog-body{padding:20px 24px;overflow-y:auto;min-height:0;overscroll-behavior:contain}
 .study-actions{flex-wrap:wrap;margin:12px 0}
 #dictationAnswer{box-sizing:border-box;display:block;width:100%;padding:12px;font:18px/1.7 Georgia,serif;border:1px solid var(--line);border-radius:8px;resize:vertical;margin-bottom:14px}
 #dictationResult p{font:20px/1.8 Georgia,serif}
 .dictation-diff mark{background:#f7df8f;border-radius:3px;padding:2px}
 .dictation-diff del{color:#a13d32}
+@media(max-width:520px){#translation .dialog-bar{padding:9px 10px;gap:5px}.dialog-title{display:block;line-height:1.25}.dialog-title strong,.dialog-title small{display:block}.dialog-title strong{font-size:14px}.dialog-title small{font-size:11px;margin-top:3px}#translation .dialog-toolbar{gap:3px}#translation .dialog-toolbar button{width:40px;padding:6px}#translation .analysis-tool-action span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}#translation .toolbar-divider{margin:0 1px}#translation .dialog-toolbar form{margin-left:1px;padding-left:4px}}
 @media(max-width:450px){.dialog-bar{padding:10px;gap:5px;font-size:13px}.dialog-bar button{font-size:12px;padding:6px}.dialog-body{padding:16px}.transport{gap:6px}.transport button{flex:1;padding:6px 8px}#dock{padding-left:12px;padding-right:12px}#dock>div:first-child{gap:6px}#realignBtn{padding:5px 8px}}
 
 /* One-row transport; secondary controls float above it without changing height. */
