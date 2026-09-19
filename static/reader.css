@@ -58,3 +58,44 @@ html{scroll-padding-bottom:calc(var(--dock-height,0px) + 25px)}
 .dictation-diff mark{background:#f7df8f;border-radius:3px;padding:2px}
 .dictation-diff del{color:#a13d32}
 @media(max-width:450px){.dialog-bar{padding:10px;gap:5px;font-size:13px}.dialog-bar button{font-size:12px;padding:6px}.dialog-body{padding:16px}.transport{gap:6px}.transport button{flex:1;padding:6px 8px}#dock{padding-left:12px;padding-right:12px}#dock>div:first-child{gap:6px}#realignBtn{padding:5px 8px}}
+
+/* One-row transport; secondary controls float above it without changing height. */
+#dock{display:block;padding:7.5px max(16px,calc((100vw - 1280px)/2)) calc(7.5px + env(safe-area-inset-bottom));background:var(--paper)}
+#dock>div.player-controls{display:flex;align-items:center;flex-wrap:nowrap;gap:12px;max-width:none;min-width:0;width:100%;position:relative}
+#dock .transport{flex:none;gap:4px;justify-content:flex-start}
+#dock button{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:44px;border:0;border-radius:8px;padding:8px;color:var(--ink)}
+#dock .transport button,#playerMore{width:44px;height:44px;flex:none;padding:10px}
+#dock #audioToggle{background:var(--accent);color:white;border-radius:50%}
+#dock svg{width:20px;height:20px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+#audioToggle svg path{fill:currentColor}
+#dock .seek-row{flex:1;min-width:0;margin:0;gap:12px}
+.seek-track{position:relative;flex:1;min-width:0;display:flex;align-items:center}
+#dock #audioSeek{width:100%;min-width:0;height:44px;padding:0;margin:0;cursor:pointer}
+#dock #audioSeek{appearance:none;-webkit-appearance:none;background:transparent;border:0}
+#audioSeek::-webkit-slider-runnable-track{height:4px;border-radius:4px;background:linear-gradient(to right,var(--accent) var(--played,0%),#d9ded8 var(--played,0%))}
+#audioSeek::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;margin-top:-5px;border:0;border-radius:50%;background:var(--accent)}
+#audioSeek::-moz-range-track{height:4px;border-radius:4px;background:#d9ded8}
+#audioSeek::-moz-range-progress{height:4px;border-radius:4px;background:var(--accent)}
+#audioSeek::-moz-range-thumb{height:14px;width:14px;border:0;border-radius:50%;background:var(--accent)}
+#seekTooltip{position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);white-space:nowrap;background:var(--ink);color:white;border-radius:6px;padding:5px 9px;font-size:12px;pointer-events:none;font-variant-numeric:tabular-nums}
+#dock .player-rate{margin:0;flex:none}
+#dock #rate{height:40px;max-width:78px;border-radius:7px;padding:4px 6px;font-size:13px;background:transparent}
+#playerExtras{display:flex;align-items:center;gap:6px;flex:none}
+#dock .player-popover{position:absolute;right:0;bottom:calc(100% + 15px);width:260px;max-width:calc(100vw - 24px);max-height:60dvh;overflow-y:auto;background:var(--paper);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 32px #14231c22;padding:8px;z-index:6}
+#dock #playerMenu button{display:flex;width:100%;justify-content:flex-start;text-align:left;min-height:46px;padding:10px 12px;font-size:14px;border-radius:7px;opacity:1;margin:0;line-height:1.5}
+#dock #playerMenu button:disabled{opacity:.45}
+#dock #realignBtn{border-top:1px solid var(--line);border-radius:0;padding-left:12px}
+.popover-heading{display:flex;align-items:center;justify-content:space-between;padding-left:8px}
+#dock #repeatPanel label{display:flex;align-items:center;justify-content:space-between;margin:8px;font-size:14px}
+#dock #repeatPanel select{width:110px}
+#dock #repeatPanel small{white-space:normal;margin:10px 8px 6px;line-height:1.6}
+@media(max-width:700px){
+ #dock{padding:5.5px 8px calc(5.5px + env(safe-area-inset-bottom))}
+ #dock>div.player-controls{gap:6px}
+ #dock .transport{gap:0}
+ #dock .transport button,#playerMore{width:40px;height:44px;padding:10px}
+ #dock .seek-row{gap:0}
+ #dock #audioElapsed,#dock #audioDuration,#dock .desktop-action{display:none}
+ #playerExtras{gap:0}
+ #dock #rate{max-width:65px;height:44px;padding:4px 2px;font-size:12px}
+}

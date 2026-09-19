@@ -36,23 +36,65 @@ $('analysisListen').onclick=()=>playSegment(selectedAlignment());
 $('analysisDictate').onclick=()=>openDictation(selectedAlignment());
 
 // Compact custom player: no browser-native transport UI.
+const playerIcon=name=>`<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">${{
+ prev:'<path d="M6 5v14M18 5l-9 7 9 7z"/>',next:'<path d="M18 5v14M6 5l9 7-9 7z"/>',
+ play:'<path d="m9 5 10 7-10 7z"/>',pause:'<path d="M8 5v14M16 5v14"/>',
+ more:'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+ pen:'<path d="m15 4 5 5M4 20l5-1L21 7l-5-5L4 14z"/>',
+ repeat:'<path d="m17 2 4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4m14-1v2a3 3 0 0 1-3 3H3"/>'
+ }[name]}</svg>`;
 $('audio').controls=false;$('audio').hidden=true;
 $('audioHint').hidden=true;$('syncStatus').hidden=true;
+$('dock').firstElementChild.hidden=true;
 $('dock').insertAdjacentHTML('beforeend',`<div class="player-controls">
- <div class="transport"><button id="audioPrev" aria-label="播放上一句">上一句</button><button id="audioToggle" class="primary">播放</button><button id="audioNext" aria-label="播放下一句">下一句</button><button id="audioDictate">听写</button></div>
- <div class="seek-row"><small id="audioElapsed">0:00</small><input id="audioSeek" type="range" min="0" max="0" step="0.1" value="0" aria-label="音频播放进度"><small id="audioDuration">0:00</small></div>
- <details class="repeat-options"><summary>单句跟读设置</summary><label>播放次数 <select id="repeatCount"><option value="1">1 次</option><option value="2">2 次</option><option value="3">3 次</option></select></label><label>跟读停顿 <select id="repeatGap"><option value="0">无</option><option value="2">2 秒</option><option value="4">4 秒</option><option value="6">6 秒</option></select></label><small>选句后生效；最后一遍结束自动暂停。</small></details>
+ <div class="transport"><button id="audioPrev" aria-label="播放上一句" title="上一句">${playerIcon('prev')}</button><button id="audioToggle" class="primary" aria-label="播放" title="播放">${playerIcon('play')}</button><button id="audioNext" aria-label="播放下一句" title="下一句">${playerIcon('next')}</button></div>
+ <div class="seek-row"><small id="audioElapsed">0:00</small><div class="seek-track"><input id="audioSeek" type="range" min="0" max="0" step="0.1" value="0" aria-label="音频播放进度"><output id="seekTooltip" hidden></output></div><small id="audioDuration">0:00</small></div>
+ <div id="playerExtras"><button id="desktopDictate" class="desktop-action">${playerIcon('pen')}<span>听写</span></button><button id="desktopRepeat" class="desktop-action" aria-expanded="false" aria-controls="repeatPanel">${playerIcon('repeat')}<span>跟读</span></button><button id="playerMore" aria-label="更多播放选项" title="更多" aria-expanded="false" aria-controls="playerMenu">${playerIcon('more')}</button></div>
+ <div id="playerMenu" class="player-popover" hidden><button id="audioDictate">${playerIcon('pen')}原音听写</button><button id="menuRepeat">${playerIcon('repeat')}跟读设置</button></div>
+ <div id="repeatPanel" class="player-popover" hidden><div class="popover-heading"><strong>单句跟读</strong><button id="repeatClose" aria-label="关闭跟读设置">×</button></div><label>播放次数 <select id="repeatCount"><option value="1">1 次</option><option value="2">2 次</option><option value="3">3 次</option></select></label><label>跟读停顿 <select id="repeatGap"><option value="0">无</option><option value="2">2 秒</option><option value="4">4 秒</option><option value="6">6 秒</option></select></label><small>选句后生效；最后一遍结束自动暂停。</small></div>
  </div>`);
+const rateLabel=$('rate').closest('label');
+rateLabel.childNodes.forEach(node=>{if(node.nodeType===Node.TEXT_NODE)node.textContent='';});
+$('rate').setAttribute('aria-label','播放速度');rateLabel.className='player-rate';
+$('playerExtras').before(rateLabel);$('playerMenu').append($('realignBtn'));
+function closePlayerPanels(restoreFocus=false){
+ const wasOpen=!$('playerMenu').hidden||!$('repeatPanel').hidden;
+ $('playerMenu').hidden=true;$('repeatPanel').hidden=true;
+ $('playerMore').setAttribute('aria-expanded','false');$('desktopRepeat').setAttribute('aria-expanded','false');
+ if(restoreFocus&&wasOpen)$('playerMore').focus();
+}
+function openRepeatPanel(){closePlayerPanels();$('repeatPanel').hidden=false;$('desktopRepeat').setAttribute('aria-expanded','true');$('repeatCount').focus();}
+$('playerMore').onclick=()=>{const opening=$('playerMenu').hidden;closePlayerPanels();$('playerMenu').hidden=!opening;$('playerMore').setAttribute('aria-expanded',String(opening));if(opening)$('playerMenu').querySelector('button:not(:disabled)')?.focus();};
+$('desktopRepeat').onclick=()=>{if($('repeatPanel').hidden)openRepeatPanel();else closePlayerPanels();};
+$('menuRepeat').onclick=openRepeatPanel;$('repeatClose').onclick=()=>closePlayerPanels(true);
+$('desktopDictate').onclick=()=>$('audioDictate').click();
+$('realignBtn').addEventListener('click',()=>closePlayerPanels());
+document.addEventListener('pointerdown',event=>{if(!$('playerExtras').contains(event.target)&&!$('playerMenu').contains(event.target)&&!$('repeatPanel').contains(event.target))closePlayerPanels();});
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&(!$('playerMenu').hidden||!$('repeatPanel').hidden)){closePlayerPanels(true);event.preventDefault();}});
+document.addEventListener('focusin',event=>{if(!$('dock').contains(event.target))closePlayerPanels();});
+let seekTooltipTimer;
+function showSeekTime(){clearTimeout(seekTooltipTimer);$('seekTooltip').textContent=`${timeLabel($('audioSeek').value)} / ${timeLabel($('audio').duration)}`;$('seekTooltip').hidden=false;}
+function hideSeekTime(){clearTimeout(seekTooltipTimer);seekTooltipTimer=setTimeout(()=>$('seekTooltip').hidden=true,800);}
+$('audioSeek').addEventListener('pointerdown',showSeekTime);
+$('audioSeek').addEventListener('input',showSeekTime);
+$('audioSeek').addEventListener('focus',showSeekTime);
+$('audioSeek').addEventListener('blur',hideSeekTime);
+$('audioSeek').addEventListener('change',hideSeekTime);
+document.addEventListener('pointerup',hideSeekTime);
+document.addEventListener('pointercancel',hideSeekTime);
 function updatePlayer(){
  const audio=$('audio'),valid=Number.isFinite(audio.duration)&&audio.duration>0;
  $('audioSeek').max=valid?audio.duration:0;$('audioSeek').value=audio.currentTime||0;$('audioSeek').disabled=!valid;
+ $('audioSeek').style.setProperty('--played',`${valid?Math.min(100,Math.max(0,audio.currentTime/audio.duration*100)):0}%`);
  $('audioElapsed').textContent=timeLabel(audio.currentTime);$('audioDuration').textContent=timeLabel(audio.duration);
  $('audioSeek').setAttribute('aria-valuetext',`${timeLabel(audio.currentTime)} / ${timeLabel(audio.duration)}`);
- $('audioToggle').textContent=(!audio.paused||repeatTimer)?'暂停':'播放';
+ const playing=!!(!audio.paused||repeatTimer),label=playing?'暂停':'播放';
+ if($('audioToggle').getAttribute('aria-label')!==label){$('audioToggle').innerHTML=playerIcon(playing?'pause':'play');$('audioToggle').setAttribute('aria-label',label);$('audioToggle').title=label;}
  const items=alignedElements(),index=timelinePosition(items);
  $('audioPrev').disabled=!items.length||index===0;
  $('audioNext').disabled=!items.length||index===items.length-1;
  $('audioDictate').disabled=!items.length;
+ $('desktopDictate').disabled=!items.length;
  if(analysisDialog.open){const el=document.querySelector('.sentence.selected');if(el)updateAnalysisNavigation(el);}
 }
 function timelinePosition(items=alignedElements()){
@@ -132,7 +174,7 @@ function openDictation(item){
  $('dictationPrev').disabled=i<=0;$('dictationNext').disabled=i>=items.length-1;
  if(!$('dictation').open)$('dictation').showModal();$('dictation').querySelector('.dialog-body').scrollTop=0;playSegment(item);
 }
-$('audioDictate').onclick=()=>{const items=alignedElements();openDictation(items[Math.max(0,timelinePosition(items))]);};
+$('audioDictate').onclick=()=>{closePlayerPanels();const items=alignedElements();openDictation(items[Math.max(0,timelinePosition(items))]);};
 $('dictationClose').onclick=()=>$('dictation').close();
 $('dictation').addEventListener('close',()=>{++dictationVersion;stopSegment();$('audio').pause();dictationItem=null;});
 $('dictationPlay').onclick=()=>playSegment(dictationItem);
@@ -147,5 +189,5 @@ $('dictationCheck').onclick=async()=>{
   $('dictationResult').innerHTML=`<h3>原文对照</h3><p lang="en">${esc(el.textContent)}</p><p class="dictation-diff" lang="en">${r.segments.map(s=>s.kind==='correct'?`<span>${esc(s.expected)}</span>`:`<mark>${s.actual?`<del>${esc(s.actual)}</del> `:''}${esc(s.expected)||'（多写）'}</mark>`).join(' ')}</p><small>标记处为漏词、错词或多写；忽略大小写与标点。</small>`;$('dictationResult').hidden=false;
  }catch(e){if(version===dictationVersion)$('dictationStatus').textContent=e.message;}finally{if(version===dictationVersion)$('dictationCheck').disabled=false;}
 };
-window.addEventListener('hashchange',()=>{clearTimeout(batchPoll);stopSegment();if(analysisDialog.open)analysisDialog.close();if($('dictation').open)$('dictation').close();});
+window.addEventListener('hashchange',()=>{closePlayerPanels();$('seekTooltip').hidden=true;clearTimeout(batchPoll);stopSegment();if(analysisDialog.open)analysisDialog.close();if($('dictation').open)$('dictation').close();});
 updatePlayer();
