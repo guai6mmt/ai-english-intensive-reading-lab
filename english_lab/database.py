@@ -10,9 +10,10 @@ from .config import config, ensure_server_dirs
 
 
 BASE_SCHEMA_VERSION = 1
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 MIGRATIONS: dict[int, tuple[str, ...]] = {
+    9: ("CREATE TABLE IF NOT EXISTS sentence_jobs (user_id TEXT NOT NULL, article_id TEXT NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(user_id, article_id))",),
     8: ("CREATE TABLE IF NOT EXISTS sentence_translations (cache_key TEXT PRIMARY KEY, payload_json TEXT NOT NULL, created_at TEXT NOT NULL)",),
     2: (
         """CREATE TABLE IF NOT EXISTS app_passwords (

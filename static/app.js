@@ -65,16 +65,18 @@ function updateAudioHighlight(){
  playingSentence?.classList.remove('playing','estimated');playingSentence=element;
  if(!element)return;
  element.classList.add('playing');if(current.estimated)element.classList.add('estimated');
- if(!$('audio').paused){const box=element.getBoundingClientRect();const top=95,bottom=window.innerHeight-150;if(box.top<top||box.bottom>bottom)element.scrollIntoView({behavior:'smooth',block:'center'});}
+ if(!$('audio').paused&&!$('dictation')?.open){const box=element.getBoundingClientRect();const top=95,bottom=window.innerHeight-$('dock').getBoundingClientRect().height-20;if(box.top<top||box.bottom>bottom)element.scrollIntoView({behavior:'smooth',block:'center'});}
 }
 async function openArticle(id, version){
  const data=await api(`/api/articles/${encodeURIComponent(id)}`);if(version!==routeVersion)return;
  article=data.article;const a=article;let sentenceItems=[];try{sentenceItems=(await api(`/api/articles/${encodeURIComponent(id)}/listening/sentences`)).sentences||[];}catch(_error){}
+ if(version!==routeVersion)return;
  const paragraphs=(a.cleaned_paragraphs||a.paragraphs||[]).map((text,index)=>({text,index})).filter(({text,index})=>index!==0||text.trim()!==a.title?.trim());
  const byParagraph=new Map();for(const item of sentenceItems){const list=byParagraph.get(item.para)||[];list.push(item);byParagraph.set(item.para,list);}
  const renderLoose=text=>splitSentences(text).map(part=>part.trim()?`<span class="sentence" role="button" tabindex="0">${esc(part)}</span>`:esc(part)).join('');
  const renderParagraph=(text,paraIndex)=>{let cursor=0,html='';for(const item of (byParagraph.get(paraIndex)||[])){const position=text.indexOf(item.text,cursor);if(position<0)continue;html+=renderLoose(text.slice(cursor,position));html+=`<span class="sentence" role="button" tabindex="0" data-align-index="${item.index}">${esc(item.text)}</span>`;cursor=position+item.text.length;}return html+renderLoose(text.slice(cursor));};
- $('main').innerHTML=`<article class="reader"><a class="muted" href="#">← 文章库</a><h1 lang="en">${esc(a.title)}</h1><div class="meta">${esc(a.section||'英语阅读')} · 点击句子查看 AI 译文、长难句拆分与语法解析${a.linked_media?' · 播放原版音频时自动高亮当前句':' · 暂无配套音频'}</div><div class="prose" lang="en">${paragraphs.map(({text,index})=>`<p>${renderParagraph(text,index)}</p>`).join('')}</div></article>`;
+ $('main').innerHTML=`<article class="reader"><a class="muted" href="#">← 文章库</a><h1 lang="en">${esc(a.title)}</h1><div class="meta">${esc(a.section||'英语阅读')} · 点击句子查看译文、重点生词与长难句拆分${a.linked_media?' · 播放原音时自动高亮当前句':' · 暂无配套音频'}</div><div class="prose" lang="en">${paragraphs.map(({text,index})=>`<p>${renderParagraph(text,index)}</p>`).join('')}</div></article>`;
+ initializeArticleStudy();
  const last=localStorage.getItem('read-position:'+id);if(last){const els=document.querySelectorAll('.sentence');els[Number(last)]?.scrollIntoView({block:'center'});}
  $('main').onclick=e=>{const el=e.target.closest('.sentence');if(el)run(()=>translateSentence(el));};
  $('main').onkeydown=e=>{if(e.target.matches('.sentence')&&['Enter',' '].includes(e.key)){e.preventDefault();run(()=>translateSentence(e.target));}};
@@ -87,8 +89,8 @@ async function translateSentence(el){
  document.querySelector('.sentence.selected')?.classList.remove('selected');el.classList.add('selected');
  localStorage.setItem('read-position:'+article.id,[...document.querySelectorAll('.sentence')].indexOf(el));
  const spec={article_id:article.id,sentence:el.textContent.trim()};selected=spec;const version=++translationVersion;
- $('selectedSentence').textContent=spec.sentence;$('analysisStatus').textContent='正在结合上下文拆解句子与分析语法…';$('analysisResult').hidden=true;$('saveSentence').disabled=true;$('saveSentence').textContent='收藏到句子本';$('translation').showModal();
- try{const result=await api('/api/sentences/translate',spec);if(version!==translationVersion)return;$('translated').textContent=result.translation;$('sentenceStructure').textContent=result.structure;$('clauseAnalysis').innerHTML=result.clauses.map(item=>`<li><p lang="en">${esc(item.text)}</p><strong>${esc(item.role)}</strong><span>${esc(item.explanation)}</span></li>`).join('');$('grammarAnalysis').innerHTML=result.grammar_points.map(item=>`<li><strong>${esc(item.point)}</strong><code lang="en">${esc(item.evidence)}</code><span>${esc(item.explanation)}</span></li>`).join('');$('analysisStatus').textContent='';$('analysisResult').hidden=false;$('saveSentence').disabled=false;}catch(e){if(version===translationVersion)$('analysisStatus').textContent=e.message;}
+ $('selectedSentence').textContent=spec.sentence;$('analysisStatus').textContent='正在读取或生成句子解析…';$('analysisResult').hidden=true;$('saveSentence').disabled=true;$('saveSentence').textContent='收藏到句子本';if(!$('translation').open)$('translation').showModal();$('analysisBody').scrollTop=0;updateAnalysisNavigation(el);
+ try{const result=await api('/api/sentences/translate',spec);if(version!==translationVersion)return;$('translated').textContent=result.translation;$('sentenceStructure').textContent=result.structure;$('clauseAnalysis').innerHTML=result.clauses.map(item=>`<li><p lang="en">${esc(item.text)}</p><strong>${esc(item.role)}</strong><span>${esc(item.explanation)}</span></li>`).join('');$('sentenceVocabulary').innerHTML=result.vocabulary.length?result.vocabulary.map(item=>`<li><strong lang="en">${esc(item.term)} <small>${esc(item.pos)}</small></strong><span>${esc(item.meaning)}</span><span>${esc(item.usage)}</span></li>`).join(''):'<li>本句没有需要额外列出的重点生词。</li>';$('analysisStatus').textContent='';$('analysisResult').hidden=false;$('saveSentence').disabled=false;}catch(e){if(version===translationVersion)$('analysisStatus').textContent=e.message;}
 }
 async function renderSentences(due=false,version=routeVersion){
  const data=await api('/api/vocabulary?kind=sentence&limit=2000'+(due?'&due=true':''));if(version!==routeVersion)return;

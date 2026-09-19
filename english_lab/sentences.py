@@ -4,7 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Any
+import threading
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -15,7 +16,8 @@ from .vocabulary import VocabularyCreate, add_entry
 
 router = APIRouter(prefix="/api/sentences", tags=["sentences"])
 
-ANALYSIS_CACHE_VERSION = "sentence-close-reading-v1"
+ANALYSIS_CACHE_VERSION = "sentence-close-reading-v2"
+_analysis_locks = [threading.Lock() for _ in range(64)]
 
 
 class SentenceSelection(BaseModel):
@@ -55,29 +57,44 @@ def _normalize_analysis(result: Any) -> dict[str, Any] | None:
         explanation = _required_text(item.get("explanation"))
         if text and role and explanation:
             clauses.append({"text": text, "role": role, "explanation": explanation})
-    grammar_points: list[dict[str, str]] = []
-    raw_grammar_points = result.get("grammar_points")
-    for item in raw_grammar_points if isinstance(raw_grammar_points, list) else []:
+    vocabulary: list[dict[str, str]] = []
+    raw_vocabulary = result.get("vocabulary")
+    if not isinstance(raw_vocabulary, list):
+        return None
+    for item in raw_vocabulary:
         if not isinstance(item, dict):
-            continue
-        point = _required_text(item.get("point"))
-        evidence = _required_text(item.get("evidence"))
-        explanation = _required_text(item.get("explanation"))
-        if point and evidence and explanation:
-            grammar_points.append({"point": point, "evidence": evidence, "explanation": explanation})
-    if not translation or not structure or not clauses or not grammar_points:
+            return None
+        term = _required_text(item.get("term"))
+        meaning = _required_text(item.get("meaning"))
+        if term and meaning:
+            vocabulary.append({"term": term, "meaning": meaning,
+                "pos": _required_text(item.get("pos")), "usage": _required_text(item.get("usage"))})
+        else:
+            return None
+    if not translation or not structure or not clauses:
         return None
     return {
         "translation": translation,
         "structure": structure,
         "clauses": clauses,
-        "grammar_points": grammar_points,
+        "vocabulary": vocabulary,
     }
 
 
 @router.post("/translate")
 def translate(spec: SentenceSelection, request: Request) -> dict[str, Any]:
     current_user(request)
+    return analyze_sentence(spec)
+
+
+def analyze_sentence(spec: SentenceSelection) -> dict[str, Any]:
+    # Coalesce a clicked sentence with an in-flight batch request.
+    slot = int(hashlib.sha256((spec.article_id + spec.sentence).encode()).hexdigest(), 16) % len(_analysis_locks)
+    with _analysis_locks[slot]:
+        return _analyze_sentence(spec)
+
+
+def _analyze_sentence(spec: SentenceSelection) -> dict[str, Any]:
     from app import call_ai_json, task_provider, provider_config
     article, sentence, context = selection(spec)
     provider = task_provider("text")
@@ -97,9 +114,9 @@ def translate(spec: SentenceSelection, request: Request) -> dict[str, Any]:
         '{"translation":"自然准确的中文译文","structure":"先说明句子主干，再概括修饰关系",'
         '"clauses":[{"text":"保留英文原文的意群或从句","role":"句法功能，如主句主干/定语从句/状语",'
         '"explanation":"该部分修饰或补充什么"}],'
-        '"grammar_points":[{"point":"语法点名称","evidence":"句中的英文词组",'
-        '"explanation":"结合本句说明形式、作用和理解方式"}]}。'
-        'clauses 按原句顺序覆盖所有有意义的意群，不改写英文；grammar_points 只解释本句真正出现的语法现象，至少一项。',
+        '"vocabulary":[{"term":"本句重点单词或短语","pos":"词性","meaning":"本句语境中的中文含义",'
+        '"usage":"本句搭配与用法"}]}。'
+        'clauses 按原句顺序覆盖所有有意义的意群，不改写英文。vocabulary 只选有学习价值的词或搭配，通常 1–5 项，简单句可以为空，不凑数。不另列语法解析。',
         json.dumps({"title": article.get("title"), "sentence": sentence, "context": context[max(0, position-1500):position+len(sentence)+1500]}, ensure_ascii=False),
         fallback=None)
     analysis = _normalize_analysis(result)
@@ -120,3 +137,110 @@ def save_sentence(spec: SentenceSelection, request: Request) -> dict[str, Any]:
         sentence_id=hashlib.sha256(sentence.encode()).hexdigest()[:24], term=sentence,
         context=sentence, source=article.get("title", ""), kind="sentence", translation=translated["translation"]))
     return {"item": item}
+
+
+# Durable progress; browser navigation does not own the worker. After a server
+# restart the saved queue is offered as paused and can be resumed explicitly.
+_jobs_lock = threading.RLock()
+_workers: set[tuple[str, str]] = set()
+
+
+class BatchSelection(BaseModel):
+    article_id: str = Field(min_length=1, max_length=200)
+    sentences: list[Annotated[str, Field(min_length=1, max_length=10000)]] = Field(min_length=1, max_length=2000)
+
+
+def _read_job(key):
+    with connect() as db:
+        row = db.execute("SELECT payload_json FROM sentence_jobs WHERE user_id=? AND article_id=?", key).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def _write_job(key, job):
+    with transaction() as db:
+        db.execute("INSERT OR REPLACE INTO sentence_jobs VALUES(?,?,?)", (*key, json.dumps(job, ensure_ascii=False)))
+
+
+def _batch_worker(key):
+    try:
+        with _jobs_lock:
+            items = _read_job(key)["sentences"]
+        for index, sentence in enumerate(items):
+            with _jobs_lock:
+                job = _read_job(key)
+                if job["state"] != "running":
+                    return
+                job["current"] = index + 1
+                _write_job(key, job)
+            error = None
+            try:
+                analyze_sentence(SentenceSelection(article_id=key[1], sentence=sentence))
+            except Exception as exc:
+                error = str(getattr(exc, "detail", "解析失败，请重试"))
+            with _jobs_lock:
+                job = _read_job(key)
+                if error:
+                    job["errors"][str(index)] = error
+                else:
+                    if index not in job["done"]:
+                        job["done"].append(index)
+                    job["errors"].pop(str(index), None)
+                _write_job(key, job)
+        with _jobs_lock:
+            job = _read_job(key)
+            job["state"] = "completed" if not job["errors"] else "partial"
+            _write_job(key, job)
+    finally:
+        with _jobs_lock:
+            _workers.discard(key)
+
+
+def _job_status(key):
+    job = _read_job(key)
+    if not job:
+        return {"state": "idle", "total": 0, "completed": 0, "failed": 0, "busy": False}
+    state = job["state"]
+    if state == "running" and key not in _workers:
+        state = "paused"
+    return {"state": state, "total": len(job["sentences"]), "completed": len(job["done"]),
+        "failed": len(job["errors"]), "current": job["current"], "busy": key in _workers,
+        "error": next(iter(job["errors"].values()), "")}
+
+
+@router.get("/batch/{article_id}")
+def batch_status(article_id: str, request: Request):
+    key = (current_user(request)["id"], article_id)
+    with _jobs_lock:
+        return _job_status(key)
+
+
+@router.post("/batch")
+def start_batch(spec: BatchSelection, request: Request):
+    key = (current_user(request)["id"], spec.article_id)
+    sentences = list(dict.fromkeys(re.sub(r"\s+", " ", s).strip() for s in spec.sentences))
+    if any(not sentence for sentence in sentences):
+        raise HTTPException(400, "请选择本文中的非空句子。")
+    for sentence in sentences:
+        selection(SentenceSelection(article_id=spec.article_id, sentence=sentence))
+    with _jobs_lock:
+        if key in _workers:
+            return _job_status(key)
+        if len(_workers) >= 2:
+            raise HTTPException(429, "已有两篇文章正在分析，请稍后开始。")
+        # Revisit in order: successful items hit the cache, failed items retry.
+        job = {"sentences": sentences, "done": [], "errors": {}, "current": 0, "state": "running"}
+        _write_job(key, job)
+        _workers.add(key)
+        threading.Thread(target=_batch_worker, args=(key,), daemon=True).start()
+        return _job_status(key)
+
+
+@router.post("/batch/{article_id}/pause")
+def pause_batch(article_id: str, request: Request):
+    key = (current_user(request)["id"], article_id)
+    with _jobs_lock:
+        job = _read_job(key)
+        if job and job["state"] == "running":
+            job["state"] = "paused"
+            _write_job(key, job)
+        return _job_status(key)

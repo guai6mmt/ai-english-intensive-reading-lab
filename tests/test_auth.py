@@ -34,13 +34,14 @@ def test_reader_forces_fresh_desktop_assets(authenticated_client):
     response = client.get("/")
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
-    assert "/static/app.js?v=sentence-close-reading-v2" in response.text
-    assert "/static/reader.css?v=sentence-close-reading-v2" in response.text
+    assert "/static/app.js?v=study-v4" in response.text
+    assert "/static/study.js?v=study-v4" in response.text
+    assert "/static/reader.css?v=study-v4" in response.text
 
     worker = client.get("/service-worker.js")
     assert worker.status_code == 200
     assert worker.headers["cache-control"] == "no-cache"
-    assert "english-lab-reader-v2" in worker.text
+    assert "english-lab-reader-v4" in worker.text
 
     media = client.get("/media")
     assert media.status_code == 200
